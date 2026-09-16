@@ -1,11 +1,20 @@
+use lux_hir::TargetEnvironment;
+
 use crate::checker::check;
 use crate::error::TypeError;
 use crate::program::TypedProgram;
 use crate::types::Type;
 
 fn check_source(source: &str) -> Result<TypedProgram, Vec<TypeError>> {
+    check_source_with_targets(source, &TargetEnvironment::new())
+}
+
+fn check_source_with_targets(
+    source: &str,
+    targets: &TargetEnvironment,
+) -> Result<TypedProgram, Vec<TypeError>> {
     let ast = lux_syntax::parse(source).expect("source should parse");
-    let hir = lux_hir::lower(&ast).expect("source should resolve");
+    let hir = lux_hir::lower(&ast, targets).expect("source should resolve");
     check(&hir)
 }
 
@@ -204,7 +213,7 @@ fn expr_type_matches_literal_and_binary_inference() {
         "#,
     )
     .expect("should parse");
-    let hir = lux_hir::lower(&ast).expect("should resolve");
+    let hir = lux_hir::lower(&ast, &TargetEnvironment::new()).expect("should resolve");
     let typed = check(&hir).expect("should type check");
 
     let scene = &hir.scenes[0];
@@ -217,4 +226,66 @@ fn expr_type_matches_literal_and_binary_inference() {
         crate::expr_type(local_types, &duration_let.value),
         Type::Duration
     );
+}
+
+fn washes_environment() -> TargetEnvironment {
+    let mut targets = TargetEnvironment::new();
+    targets.insert("Washes");
+    targets
+}
+
+#[test]
+fn intensity_attribute_assignment_passes() {
+    let result = check_source_with_targets(
+        "scene main { Washes.intensity = 50%; }",
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn attribute_assignment_rejects_wrong_type() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.intensity = red; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Intensity`, found `Color`"))
+    );
+}
+
+#[test]
+fn attribute_assignment_rejects_duration() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.intensity = 2s; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Intensity`, found `Duration`"))
+    );
+}
+
+#[test]
+fn unknown_attribute_name_is_an_error() {
+    let errors =
+        check_source_with_targets("scene main { Washes.pan = 50%; }", &washes_environment())
+            .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("unknown attribute `pan`"))
+    );
+}
+
+#[test]
+fn color_attribute_assignment_passes() {
+    let result =
+        check_source_with_targets("scene main { Washes.color = red; }", &washes_environment());
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
 }

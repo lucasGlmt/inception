@@ -43,6 +43,7 @@ pub fn lower_to_bytecode(module: &MirModule) -> BytecodeModule {
         constants: builder.constants,
         functions,
         entry: module.entry.map(to_bytecode_function_id),
+        target_count: module.target_count,
     }
 }
 
@@ -144,6 +145,13 @@ impl Builder {
                 code.push(Instruction::Pop);
                 false
             }
+            MirInstruction::SetAttribute { target, attribute } => {
+                code.push(Instruction::SetAttribute {
+                    target: to_bytecode_target_id(*target),
+                    attribute: to_bytecode_attribute(*attribute),
+                });
+                false
+            }
         };
 
         if net_pushes {
@@ -168,6 +176,17 @@ fn to_bytecode_function_id(id: FunctionId) -> lux_bytecode::FunctionId {
 /// `lux_bytecode::verify` rather than cause unsafety.
 fn to_bytecode_local_id(id: lux_hir::LocalId) -> lux_bytecode::LocalId {
     lux_bytecode::LocalId(id.0 as u16)
+}
+
+fn to_bytecode_target_id(id: lux_hir::TargetId) -> lux_bytecode::TargetId {
+    lux_bytecode::TargetId(id.0)
+}
+
+fn to_bytecode_attribute(attribute: lux_typeck::Attribute) -> lux_bytecode::Attribute {
+    match attribute {
+        lux_typeck::Attribute::Intensity => lux_bytecode::Attribute::Intensity,
+        lux_typeck::Attribute::Color => lux_bytecode::Attribute::Color,
+    }
 }
 
 fn to_value_type(ty: Type) -> lux_bytecode::ValueType {

@@ -26,18 +26,25 @@ use std::collections::HashMap;
 use lux_syntax::Span;
 use lux_syntax::ast::{self, Expression, Item, SourceFile, Statement};
 
+use crate::environment::TargetEnvironment;
 use crate::error::HirError;
 use crate::hir::{
-    HirExpr, HirExprStatement, HirFile, HirLet, HirScene, HirStatement, HirWait, LocalDecl,
-    TypeAnnotation,
+    HirAssign, HirExpr, HirExprStatement, HirFile, HirLet, HirScene, HirStatement, HirWait,
+    LocalDecl, TypeAnnotation,
 };
 use crate::ids::{LocalId, SceneId};
 
-/// Lowers a parsed source file into HIR, resolving every name reference.
-/// Returns every diagnostic collected (never just the first) when
-/// resolution fails anywhere in the file.
-pub fn lower(ast: &SourceFile) -> Result<HirFile, Vec<HirError>> {
-    let mut lowering = Lowering { errors: Vec::new() };
+/// Lowers a parsed source file into HIR, resolving every name reference —
+/// both local variables and, per `targets`, lighting target names (see
+/// [`TargetEnvironment`]'s docs for why that's a parameter here rather
+/// than something this crate resolves on its own). Returns every
+/// diagnostic collected (never just the first) when resolution fails
+/// anywhere in the file.
+pub fn lower(ast: &SourceFile, targets: &TargetEnvironment) -> Result<HirFile, Vec<HirError>> {
+    let mut lowering = Lowering {
+        errors: Vec::new(),
+        targets,
+    };
     let mut scenes = Vec::new();
     let mut scene_names: HashMap<String, Span> = HashMap::new();
 
@@ -89,11 +96,12 @@ impl Scope {
     }
 }
 
-struct Lowering {
+struct Lowering<'a> {
     errors: Vec<HirError>,
+    targets: &'a TargetEnvironment,
 }
 
-impl Lowering {
+impl Lowering<'_> {
     fn lower_scene(&mut self, id: SceneId, decl: &ast::SceneDecl) -> HirScene {
         let mut scope = Scope::default();
         let mut locals = Vec::new();
@@ -129,7 +137,31 @@ impl Lowering {
             Statement::Expression(expr_stmt) => self
                 .lower_expr_statement(scope, expr_stmt)
                 .map(HirStatement::Expression),
+            Statement::Assign(assign) => self.lower_assign(scope, assign).map(HirStatement::Assign),
         }
+    }
+
+    fn lower_assign(&mut self, scope: &Scope, assign: &ast::AssignStatement) -> Option<HirAssign> {
+        let value = self.resolve_expr(scope, &assign.value);
+
+        let target = match self.targets.resolve(&assign.target.name) {
+            Some(target) => Some(target),
+            None => {
+                self.errors.push(HirError::new(
+                    format!("unknown target `{}`", assign.target.name),
+                    assign.target.span,
+                ));
+                None
+            }
+        };
+
+        Some(HirAssign {
+            target: target?,
+            attribute_name: assign.attribute.name.clone(),
+            attribute_span: assign.attribute.span,
+            value: value?,
+            span: assign.span,
+        })
     }
 
     fn lower_let(

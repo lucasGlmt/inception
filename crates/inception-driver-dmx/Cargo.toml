@@ -1,6 +1,20 @@
 [package]
 name = "inception-driver-dmx"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+inception-core.workspace = true
+inception-renderer.workspace = true
+
+# Test-only: exercises the full virtual pipeline end to end (Lux source
+# through to a recorded DMX frame). This crate's own library code depends
+# on nothing but inception-core/inception-renderer — see AGENTS.md's
+# dependency direction — this is exactly why it's a dev-dependency rather
+# than a normal one.
+[dev-dependencies]
+lux-compiler.workspace = true
+lux-bytecode.workspace = true
+inception-vm.workspace = true

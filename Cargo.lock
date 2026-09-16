@@ -9,6 +9,13 @@ version = "0.1.0"
 [[package]]
 name = "inception-driver-dmx"
 version = "0.1.0"
+dependencies = [
+ "inception-core",
+ "inception-renderer",
+ "inception-vm",
+ "lux-bytecode",
+ "lux-compiler",
+]
 
 [[package]]
 name = "inception-driver-launchpad"
@@ -21,6 +28,9 @@ version = "0.1.0"
 [[package]]
 name = "inception-renderer"
 version = "0.1.0"
+dependencies = [
+ "inception-core",
+]
 
 [[package]]
 name = "inception-runtime"

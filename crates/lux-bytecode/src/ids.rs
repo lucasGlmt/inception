@@ -14,3 +14,11 @@ pub struct ConstantId(pub u32);
 /// `max_stack: u16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocalId(pub u16);
+
+/// A resolved lighting target, referenced by `SetAttribute`. Independent
+/// of `lux_hir::TargetId` — the same intentional, boundary-preserving
+/// duplication already used for `ValueType`/`lux_typeck::Type`: this
+/// crate must not depend on the compiler frontend. `lux-mir`'s codegen
+/// does the trivial numeric conversion at the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TargetId(pub u32);

@@ -9,6 +9,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use lux_compiler::TargetEnvironment;
+
+/// Fixtures may reference this target — this stands in for the
+/// rig/patch/linker this milestone doesn't have yet (see
+/// `lux_compiler::TargetEnvironment`'s docs).
+fn fixture_environment() -> TargetEnvironment {
+    let mut targets = TargetEnvironment::new();
+    targets.insert("Washes");
+    targets
+}
+
 fn fixtures_dir(kind: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/compiler")
@@ -38,7 +49,7 @@ fn pass_fixtures_compile_successfully() {
 
     for path in files {
         let source = fs::read_to_string(&path).expect("failed to read fixture");
-        if let Err(diagnostics) = lux_compiler::check(&source) {
+        if let Err(diagnostics) = lux_compiler::check(&source, &fixture_environment()) {
             panic!(
                 "expected {} to compile, got diagnostics: {diagnostics:#?}",
                 path.display()
@@ -59,7 +70,7 @@ fn fail_fixtures_are_rejected() {
 
     for path in files {
         let source = fs::read_to_string(&path).expect("failed to read fixture");
-        if lux_compiler::check(&source).is_ok() {
+        if lux_compiler::check(&source, &fixture_environment()).is_ok() {
             panic!(
                 "expected {} to fail to compile, but it compiled successfully",
                 path.display()

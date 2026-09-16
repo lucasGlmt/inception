@@ -11,6 +11,7 @@
 //! [`infer::expr_type`] is the trusted, non-diagnostic entry point it
 //! uses for that.
 
+pub mod attribute;
 pub mod bounds;
 pub mod checker;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use attribute::Attribute;
 pub use checker::check;
 pub use error::TypeError;
 pub use infer::expr_type;

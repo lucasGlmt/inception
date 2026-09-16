@@ -25,6 +25,13 @@ pub struct BytecodeModule {
     /// module with no `main` scene simply can't be run directly (nothing
     /// checks for this today since there is no VM yet).
     pub entry: Option<FunctionId>,
+    /// How many distinct lighting targets `SetAttribute` instructions in
+    /// this module may reference: valid `TargetId`s are `0..target_count`.
+    /// There's no `Vec<Target>` here — a target is nothing but a
+    /// resolved-elsewhere set of fixtures (see `AGENTS.md`'s "hors
+    /// scope": no rig/patch/linker in this milestone), so a bare count is
+    /// all the verifier needs to bounds-check references against.
+    pub target_count: u32,
 }
 
 /// A single function's compiled code.

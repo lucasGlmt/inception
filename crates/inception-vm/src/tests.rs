@@ -3,7 +3,7 @@
 //! `crate::vm::arithmetic_tests` for direct, exhaustive arithmetic-table
 //! tests.
 
-use inception_core::{Duration as CoreDuration, Timestamp, VirtualClock};
+use inception_core::{Duration as CoreDuration, LightingState, Timestamp, VirtualClock};
 use lux_bytecode::{
     BytecodeModule, BytecodeVersion, ColorValue, Constant, ConstantId, Function, FunctionId,
     Instruction, LocalId, ValueType,
@@ -20,6 +20,7 @@ fn module_with(constants: Vec<Constant>, functions: Vec<Function>) -> BytecodeMo
         constants,
         functions,
         entry: Some(FunctionId(0)),
+        target_count: 0,
     }
 }
 
@@ -47,8 +48,9 @@ fn immediate_return_finishes() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert!(vm.is_finished());
 }
@@ -83,8 +85,9 @@ fn const_and_local_round_trip_the_correct_value() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert!(vm.is_waiting());
     assert_eq!(vm.stack(), &[Value::Int(42)]);
@@ -118,8 +121,9 @@ fn arithmetic_result_feeds_correctly_into_a_later_instruction() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert!(vm.is_waiting());
     assert_eq!(vm.stack(), &[Value::Int(3)]);
@@ -138,8 +142,9 @@ fn call_then_return_finishes_normally() {
     let module = module_with(vec![], vec![main, callee]);
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert!(vm.is_finished());
 }
@@ -161,19 +166,20 @@ fn wait_blocks_then_resumes_exactly_when_time_passes() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
     assert_eq!(vm.state(), VmState::WaitingUntil(Timestamp::from_secs(1)));
 
     // Half the wait elapsed: still blocked, no partial progress.
     clock.advance(CoreDuration::from_millis(500));
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
     assert!(vm.is_waiting());
     assert_eq!(vm.state(), VmState::WaitingUntil(Timestamp::from_secs(1)));
 
     // The rest elapses: resumes exactly after WAIT, then hits RETURN.
     clock.advance(CoreDuration::from_millis(500));
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
     assert!(vm.is_finished());
 }
 
@@ -194,13 +200,14 @@ fn a_late_runtime_does_not_try_to_catch_up() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
     assert!(vm.is_waiting());
 
     // The runtime "polls late" by 5s when only 1s was needed.
     clock.advance(CoreDuration::from_secs(5));
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     // Resumes once and finishes directly — no intermediate ticks, no
     // attempt to simulate the 4 "missed" seconds.
@@ -226,8 +233,9 @@ fn division_by_zero_is_a_structured_error_not_a_panic() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    let err = vm.run_until_blocked(&clock).unwrap_err();
+    let err = vm.run_until_blocked(&clock, &mut lighting).unwrap_err();
 
     assert_eq!(err.kind, VmErrorKind::DivisionByZero);
     assert!(vm.is_faulted());
@@ -251,8 +259,9 @@ fn reading_an_uninitialized_local_is_a_structured_error() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    let err = vm.run_until_blocked(&clock).unwrap_err();
+    let err = vm.run_until_blocked(&clock, &mut lighting).unwrap_err();
 
     assert_eq!(err.kind, VmErrorKind::UninitializedLocal(LocalId(0)));
     assert_eq!(err.function, FunctionId(0));
@@ -314,8 +323,9 @@ fn colors_round_trip_through_the_stack() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert!(vm.is_waiting());
     assert_eq!(
@@ -341,8 +351,9 @@ fn debug_inspection_reflects_the_resume_point_after_wait() {
     );
     let mut vm = started(module);
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert_eq!(vm.stack(), &[] as &[Value]);
     assert_eq!(vm.current_function(), Some(FunctionId(0)));
@@ -359,8 +370,80 @@ fn never_started_vm_run_is_a_harmless_no_op() {
     );
     let mut vm = Vm::new(module).unwrap();
     let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
 
-    vm.run_until_blocked(&clock).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
 
     assert_eq!(vm.state(), VmState::Ready);
 }
+
+fn intensity_set_attribute_module() -> BytecodeModule {
+    let mut module = module_with(
+        vec![Constant::Intensity(32767)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::SetAttribute {
+                    target: lux_bytecode::TargetId(0),
+                    attribute: lux_bytecode::Attribute::Intensity,
+                },
+                Instruction::Return,
+            ],
+            vec![],
+            1,
+        )],
+    );
+    module.target_count = 1;
+    module
+}
+
+#[test]
+fn set_attribute_propagates_to_every_fixture_the_target_resolves_to() {
+    let mut vm = started(intensity_set_attribute_module());
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    lighting.define_target(
+        inception_core::TargetId(0),
+        inception_core::ResolvedTarget {
+            fixtures: vec![inception_core::FixtureId(0), inception_core::FixtureId(1)],
+        },
+    );
+
+    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+
+    assert!(vm.is_finished());
+    let expected = inception_core::Intensity::new(32767);
+    assert_eq!(lighting.intensity(inception_core::FixtureId(0)), expected);
+    assert_eq!(lighting.intensity(inception_core::FixtureId(1)), expected);
+    // A fixture not part of the target is left untouched.
+    assert_eq!(
+        lighting.intensity(inception_core::FixtureId(2)),
+        inception_core::Intensity::ZERO
+    );
+}
+
+#[test]
+fn set_attribute_to_an_unknown_target_is_a_structured_error() {
+    let mut vm = started(intensity_set_attribute_module());
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    // No target defined at all: TargetId(0) is unknown to `lighting`,
+    // even though it's in range per the module's own `target_count`.
+
+    let err = vm.run_until_blocked(&clock, &mut lighting).unwrap_err();
+
+    assert_eq!(
+        err.kind,
+        VmErrorKind::UnknownTarget(lux_bytecode::TargetId(0))
+    );
+}
+
+// A `SetAttribute` whose popped value doesn't match its declared
+// attribute (e.g. a `Duration` for `Intensity`) is already rejected by
+// `lux_bytecode::verify` — so `Vm::new` refuses that module outright,
+// the same way `malformed_hand_built_module_is_rejected_at_construction_not_at_runtime`
+// shows for `LoadLocal`. There is therefore no verified module that
+// reaches `Vm::exec_set_attribute`'s own defensive type check; that
+// logic (`Value::into_attribute_value`) is unit-tested directly in
+// `crate::value::tests` instead.

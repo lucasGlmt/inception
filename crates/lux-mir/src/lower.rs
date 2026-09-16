@@ -28,7 +28,12 @@ use crate::values::lower_literal;
 /// (`MirModule::entry` is `None`).
 const ENTRY_SCENE_NAME: &str = "main";
 
-pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
+/// `target_count` is the number of distinct lighting targets known at
+/// this point — i.e. the length of the `lux_hir::TargetEnvironment` that
+/// was passed to `lux_hir::lower` for this same `hir`. It flows straight
+/// through to `MirModule::target_count` and, from there, to
+/// `lux_bytecode::BytecodeModule::target_count`.
+pub fn lower(hir: &HirFile, typed: &TypedProgram, target_count: u32) -> MirModule {
     let mut functions = Vec::with_capacity(hir.scenes.len());
     let mut entry = None;
 
@@ -40,7 +45,11 @@ pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
         functions.push(lower_scene(id, scene, &typed.scenes[index].local_types));
     }
 
-    MirModule { functions, entry }
+    MirModule {
+        functions,
+        entry,
+        target_count,
+    }
 }
 
 fn lower_scene(id: FunctionId, scene: &HirScene, local_types: &[Type]) -> MirFunction {
@@ -87,6 +96,25 @@ fn lower_statement(stmt: &HirStatement, local_types: &[Type], out: &mut Vec<MirI
         HirStatement::Expression(expr_stmt) => {
             lower_expr(&expr_stmt.value, local_types, out);
             out.push(MirInstruction::Pop);
+        }
+        HirStatement::Assign(assign) => {
+            lower_expr(&assign.value, local_types, out);
+            // Trusted re-derivation, not re-validation: `lux_typeck::check`
+            // already rejected any unknown attribute name for this HIR to
+            // exist here (see this module's precondition docs). Cheap
+            // enough (a linear scan over `Attribute::ALL`, currently 2
+            // entries) that threading the resolved `Attribute` through
+            // `TypedProgram` instead wasn't worth the extra plumbing.
+            let attribute = lux_typeck::Attribute::from_name(&assign.attribute_name).unwrap_or_else(|| {
+                unreachable!(
+                    "lower: attribute `{}` should already be valid, checked by lux_typeck::check",
+                    assign.attribute_name
+                )
+            });
+            out.push(MirInstruction::SetAttribute {
+                target: assign.target,
+                attribute,
+            });
         }
     }
 }

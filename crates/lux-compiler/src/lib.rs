@@ -14,7 +14,7 @@ pub mod diagnostic;
 
 pub use diagnostic::{Diagnostic, Stage};
 pub use lux_bytecode::BytecodeModule;
-pub use lux_hir::HirFile;
+pub use lux_hir::{HirFile, TargetEnvironment, TargetId};
 pub use lux_typeck::TypedProgram;
 
 /// The result of successfully checking a Lux program: its fully resolved
@@ -32,9 +32,17 @@ pub struct CheckedProgram {
 /// collected by whichever stage failed first — parsing and resolution
 /// stages don't proceed to the next stage once they've failed, since a
 /// later stage can't meaningfully run over a tree it knows is malformed.
-pub fn check(source: &str) -> Result<CheckedProgram, Vec<Diagnostic>> {
+///
+/// `targets` resolves the target names an `<target>.<attribute> = ...;`
+/// assignment can reference (e.g. `Washes` in `Washes.intensity = 50%;`).
+/// This is a deliberate, temporary stand-in for the rig/patch/linker this
+/// milestone doesn't have yet — see [`TargetEnvironment`]'s docs — so
+/// nothing about which target names exist is hardcoded in this crate;
+/// pass `&TargetEnvironment::new()` for a program that assigns no
+/// attributes.
+pub fn check(source: &str, targets: &TargetEnvironment) -> Result<CheckedProgram, Vec<Diagnostic>> {
     let ast = lux_syntax::parse(source).map_err(diagnostic::from_syntax_errors)?;
-    let hir = lux_hir::lower(&ast).map_err(diagnostic::from_hir_errors)?;
+    let hir = lux_hir::lower(&ast, targets).map_err(diagnostic::from_hir_errors)?;
     let typed = lux_typeck::check(&hir).map_err(diagnostic::from_type_errors)?;
     Ok(CheckedProgram { hir, typed })
 }
@@ -42,7 +50,7 @@ pub fn check(source: &str) -> Result<CheckedProgram, Vec<Diagnostic>> {
 /// Compiles `source` all the way down to a verified, in-memory
 /// [`BytecodeModule`]: [`check`], then lowers the checked program through
 /// `lux-mir` into MIR, generates bytecode, and verifies that bytecode
-/// before returning it.
+/// before returning it. See [`check`] for what `targets` is.
 ///
 /// The compiler never hands back bytecode it hasn't verified itself. If
 /// verification ever fails here, that means the compiler generated
@@ -51,9 +59,12 @@ pub fn check(source: &str) -> Result<CheckedProgram, Vec<Diagnostic>> {
 /// reported as a single `Stage::Internal` diagnostic rather than the
 /// verifier's raw errors, which aren't meaningful to a Lux program
 /// author.
-pub fn compile(source: &str) -> Result<BytecodeModule, Vec<Diagnostic>> {
-    let checked = check(source)?;
-    let mir = lux_mir::lower(&checked.hir, &checked.typed);
+pub fn compile(
+    source: &str,
+    targets: &TargetEnvironment,
+) -> Result<BytecodeModule, Vec<Diagnostic>> {
+    let checked = check(source, targets)?;
+    let mir = lux_mir::lower(&checked.hir, &checked.typed, targets.len() as u32);
     let bytecode = lux_mir::lower_to_bytecode(&mir);
 
     match lux_bytecode::verify(&bytecode) {
@@ -68,6 +79,16 @@ pub fn compile(source: &str) -> Result<BytecodeModule, Vec<Diagnostic>> {
 mod tests {
     use super::*;
 
+    fn no_targets() -> TargetEnvironment {
+        TargetEnvironment::new()
+    }
+
+    fn washes_environment() -> TargetEnvironment {
+        let mut targets = TargetEnvironment::new();
+        targets.insert("Washes");
+        targets
+    }
+
     #[test]
     fn minimal_scene_compiles() {
         let source = r#"
@@ -75,7 +96,7 @@ mod tests {
                 wait 1s;
             }
         "#;
-        assert!(check(source).is_ok());
+        assert!(check(source, &no_targets()).is_ok());
     }
 
     #[test]
@@ -86,7 +107,7 @@ mod tests {
                 wait duration;
             }
         "#;
-        check(source).expect("should type check");
+        check(source, &no_targets()).expect("should type check");
     }
 
     #[test]
@@ -97,7 +118,7 @@ mod tests {
                 wait duration;
             }
         "#;
-        let diagnostics = check(source).expect_err("should fail type checking");
+        let diagnostics = check(source, &no_targets()).expect_err("should fail type checking");
         assert!(diagnostics.iter().all(|d| d.stage == Stage::Type));
         assert!(
             diagnostics
@@ -114,14 +135,14 @@ mod tests {
     #[test]
     fn syntax_errors_short_circuit_before_resolution() {
         let source = "scene main { wait; }";
-        let diagnostics = check(source).expect_err("should fail parsing");
+        let diagnostics = check(source, &no_targets()).expect_err("should fail parsing");
         assert!(diagnostics.iter().all(|d| d.stage == Stage::Syntax));
     }
 
     #[test]
     fn unknown_name_is_a_resolve_diagnostic() {
         let source = "scene main { wait missing; }";
-        let diagnostics = check(source).expect_err("should fail resolution");
+        let diagnostics = check(source, &no_targets()).expect_err("should fail resolution");
         assert!(diagnostics.iter().all(|d| d.stage == Stage::Resolve));
         assert!(
             diagnostics
@@ -137,7 +158,7 @@ mod tests {
                 wait 1s;
             }
         "#;
-        let module = compile(source).expect("program should compile");
+        let module = compile(source, &no_targets()).expect("program should compile");
         lux_bytecode::verify(&module).expect("compiler must generate valid bytecode");
     }
 
@@ -149,7 +170,7 @@ mod tests {
                 wait duration;
             }
         "#;
-        let module = compile(source).unwrap();
+        let module = compile(source, &no_targets()).unwrap();
         assert!(!module.functions.is_empty());
         lux_bytecode::verify(&module).expect("compiler must generate valid bytecode");
     }
@@ -162,7 +183,7 @@ mod tests {
                 wait duration;
             }
         "#;
-        let module = compile(source).expect("program should compile");
+        let module = compile(source, &no_targets()).expect("program should compile");
         lux_bytecode::verify(&module).expect("compiler must generate valid bytecode");
     }
 
@@ -177,14 +198,49 @@ mod tests {
                 wait duration;
             }
         "#;
-        let module = compile(source).expect("program should compile");
+        let module = compile(source, &no_targets()).expect("program should compile");
         lux_bytecode::verify(&module).expect("compiler must generate valid bytecode");
     }
 
     #[test]
     fn compile_reports_frontend_diagnostics_without_reaching_codegen() {
         let source = "scene main { wait 50%; }";
-        let diagnostics = compile(source).expect_err("should fail type checking");
+        let diagnostics = compile(source, &no_targets()).expect_err("should fail type checking");
         assert!(diagnostics.iter().all(|d| d.stage == Stage::Type));
+    }
+
+    #[test]
+    fn compiles_attribute_assignment() {
+        let source = "scene main { Washes.intensity = 50%; }";
+        let module = compile(source, &washes_environment()).expect("program should compile");
+        assert_eq!(module.target_count, 1);
+        lux_bytecode::verify(&module).expect("compiler must generate valid bytecode");
+    }
+
+    #[test]
+    fn attribute_type_mismatch_is_a_type_diagnostic_not_a_runtime_one() {
+        // item 35 of this milestone's task brief: `Washes.intensity = red;`
+        // must fail at type checking, never reach the renderer or VM.
+        let source = "scene main { Washes.intensity = red; }";
+        let diagnostics =
+            compile(source, &washes_environment()).expect_err("should fail type checking");
+        assert!(diagnostics.iter().all(|d| d.stage == Stage::Type));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("expected `Intensity`, found `Color`"))
+        );
+    }
+
+    #[test]
+    fn unknown_target_is_a_resolve_diagnostic() {
+        let source = "scene main { Washes.intensity = 50%; }";
+        let diagnostics = compile(source, &no_targets()).expect_err("should fail resolution");
+        assert!(diagnostics.iter().all(|d| d.stage == Stage::Resolve));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("unknown target `Washes`"))
+        );
     }
 }

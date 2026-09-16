@@ -1,17 +1,26 @@
 use lux_syntax::ast::Literal;
 
+use crate::environment::TargetEnvironment;
 use crate::hir::{HirExpr, HirStatement};
 use crate::ids::LocalId;
 use crate::resolve::lower;
 
 fn lower_ok(source: &str) -> crate::hir::HirFile {
+    lower_ok_with(source, &TargetEnvironment::new())
+}
+
+fn lower_ok_with(source: &str, targets: &TargetEnvironment) -> crate::hir::HirFile {
     let ast = lux_syntax::parse(source).expect("source should parse");
-    lower(&ast).expect("should resolve")
+    lower(&ast, targets).expect("should resolve")
 }
 
 fn lower_err(source: &str) -> Vec<crate::error::HirError> {
+    lower_err_with(source, &TargetEnvironment::new())
+}
+
+fn lower_err_with(source: &str, targets: &TargetEnvironment) -> Vec<crate::error::HirError> {
     let ast = lux_syntax::parse(source).expect("source should parse");
-    lower(&ast).expect_err("should fail resolution")
+    lower(&ast, targets).expect_err("should fail resolution")
 }
 
 #[test]
@@ -111,5 +120,52 @@ fn literal_kinds_survive_lowering() {
     assert_eq!(
         let_stmt.value,
         HirExpr::Literal(Literal::Intensity(50), let_stmt.value.span())
+    );
+}
+
+#[test]
+fn resolves_declared_target_in_assignment() {
+    let mut targets = TargetEnvironment::new();
+    let washes = targets.insert("Washes");
+
+    let file = lower_ok_with("scene main { Washes.intensity = 50%; }", &targets);
+
+    let HirStatement::Assign(assign) = &file.scenes[0].statements[0] else {
+        panic!("expected assign statement");
+    };
+    assert_eq!(assign.target, washes);
+    assert_eq!(assign.attribute_name, "intensity");
+}
+
+#[test]
+fn unknown_target_is_a_resolution_error() {
+    let errors = lower_err("scene main { Washes.intensity = 50%; }");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("unknown target `Washes`"))
+    );
+}
+
+#[test]
+fn assignment_value_is_still_resolved_against_locals() {
+    let mut targets = TargetEnvironment::new();
+    targets.insert("Washes");
+
+    let file = lower_ok_with(
+        r#"
+        scene main {
+            let level = 50%;
+            Washes.intensity = level;
+        }
+        "#,
+        &targets,
+    );
+    let HirStatement::Assign(assign) = &file.scenes[0].statements[1] else {
+        panic!("expected assign statement");
+    };
+    assert_eq!(
+        assign.value,
+        HirExpr::Local(LocalId(0), assign.value.span())
     );
 }

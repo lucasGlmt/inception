@@ -6,7 +6,8 @@
 //! priority for this milestone is correctness and verifiability, not a
 //! final on-disk format (see item 15 of the task brief).
 
-use crate::ids::{ConstantId, FunctionId, LocalId};
+use crate::attribute::Attribute;
+use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
@@ -39,4 +40,14 @@ pub enum Instruction {
     /// Discards the top of the stack, e.g. for a bare expression
     /// statement whose value is unused.
     Pop,
+
+    /// Pops a value and applies it to `attribute` on every fixture
+    /// `target` resolves to, in the semantic `LightingState` (never DMX —
+    /// see `AGENTS.md`'s lighting-state/renderer separation). The popped
+    /// value's type must match `attribute.value_type()`; net stack
+    /// effect is `-1`, the same as `StoreLocal`/`Wait`/`Pop`.
+    SetAttribute {
+        target: TargetId,
+        attribute: Attribute,
+    },
 }

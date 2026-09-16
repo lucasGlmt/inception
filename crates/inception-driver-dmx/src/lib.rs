@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! DMX output drivers.
+//!
+//! Only virtual implementations exist here — see `AGENTS.md`'s "hors
+//! scope" and this crate's module docs. A real hardware driver (Enttec,
+//! Art-Net, sACN, ...) is a later, separate crate built against the same
+//! [`DmxOutput`] trait, once the fully virtual pipeline is validated.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod null;
+pub mod output;
+pub mod recording;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use null::NullDmxOutput;
+pub use output::DmxOutput;
+pub use recording::RecordingDmxOutput;

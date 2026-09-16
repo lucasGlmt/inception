@@ -22,10 +22,11 @@
 
 use std::collections::HashMap;
 
-use lux_hir::{HirExpr, HirFile, HirLet, HirScene, HirStatement, HirWait, LocalId};
+use lux_hir::{HirAssign, HirExpr, HirFile, HirLet, HirScene, HirStatement, HirWait, LocalId};
 use lux_syntax::Span;
 use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
+use crate::attribute::Attribute;
 use crate::bounds::bound_for;
 use crate::error::TypeError;
 use crate::program::{TypedProgram, TypedScene};
@@ -97,6 +98,33 @@ impl Checker {
             HirStatement::Expression(expr_stmt) => {
                 self.infer(local_types, &expr_stmt.value);
             }
+            HirStatement::Assign(assign) => self.check_assign(local_types, assign),
+        }
+    }
+
+    fn check_assign(&mut self, local_types: &HashMap<LocalId, Type>, assign: &HirAssign) {
+        let inferred = self.infer(local_types, &assign.value);
+
+        let Some(attribute) = Attribute::from_name(&assign.attribute_name) else {
+            self.errors.push(TypeError::new(
+                format!("unknown attribute `{}`", assign.attribute_name),
+                assign.attribute_span,
+            ));
+            return;
+        };
+
+        let expected = attribute.value_type();
+        if let Some(inferred_ty) = inferred
+            && inferred_ty != expected
+        {
+            self.errors.push(
+                TypeError::new(
+                    format!("expected `{expected}`, found `{inferred_ty}`"),
+                    assign.value.span(),
+                )
+                .with_secondary_span(assign.attribute_span)
+                .with_help(format!("`{attribute}` expects `{expected}`")),
+            );
         }
     }
 

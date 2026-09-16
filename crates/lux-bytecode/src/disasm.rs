@@ -83,6 +83,9 @@ fn write_instruction(out: &mut String, module: &BytecodeModule, instruction: Ins
         Instruction::Pop => {
             let _ = write!(out, "POP");
         }
+        Instruction::SetAttribute { target, attribute } => {
+            let _ = write!(out, "{:<11} #{} {attribute:?}", "SET_ATTRIBUTE", target.0);
+        }
     }
 }
 

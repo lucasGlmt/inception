@@ -1,4 +1,5 @@
-use crate::ids::{ConstantId, FunctionId, LocalId};
+use crate::attribute::Attribute;
+use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
 use crate::instruction::Instruction;
 use crate::module::{BytecodeModule, BytecodeVersion, Function};
 use crate::value::{Constant, ValueType};
@@ -10,6 +11,7 @@ fn empty_module() -> BytecodeModule {
         constants: Vec::new(),
         functions: Vec::new(),
         entry: None,
+        target_count: 0,
     }
 }
 
@@ -301,4 +303,97 @@ fn reports_multiple_errors_in_one_pass() {
 fn disassemble_does_not_panic_on_invalid_module() {
     let module = function_with(vec![], vec![], vec![Instruction::Const(ConstantId(5))], 0);
     let _ = crate::disasm::disassemble(&module);
+}
+
+#[test]
+fn valid_set_attribute_passes() {
+    let mut module = function_with(
+        vec![Constant::Intensity(32768)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::SetAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        1,
+    );
+    module.target_count = 1;
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn set_attribute_with_wrong_value_type_is_rejected() {
+    // The exact scenario from item 36 of the task brief: a Duration
+    // pushed for an Intensity attribute must be rejected before
+    // execution.
+    let mut module = function_with(
+        vec![Constant::Duration(1_000_000_000)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::SetAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        1,
+    );
+    module.target_count = 1;
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| e.kind
+        == VerificationErrorKind::TypeMismatch {
+            expected: ValueType::Intensity,
+            found: ValueType::Duration,
+        }));
+}
+
+#[test]
+fn set_attribute_with_out_of_range_target_is_rejected() {
+    let module = function_with(
+        vec![Constant::Intensity(0)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::SetAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        1,
+    );
+    // target_count left at 0: TargetId(0) is out of range.
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == VerificationErrorKind::InvalidTargetId(TargetId(0)))
+    );
+}
+
+#[test]
+fn set_attribute_on_empty_stack_is_a_stack_underflow() {
+    let mut module = function_with(
+        vec![],
+        vec![],
+        vec![
+            Instruction::SetAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        0,
+    );
+    module.target_count = 1;
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == VerificationErrorKind::StackUnderflow)
+    );
 }

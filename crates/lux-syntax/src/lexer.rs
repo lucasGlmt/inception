@@ -92,6 +92,10 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     self.push(TokenKind::Colon, start);
                 }
+                b'.' => {
+                    self.advance();
+                    self.push(TokenKind::Dot, start);
+                }
                 b'+' => {
                     self.advance();
                     self.push(TokenKind::Plus, start);
@@ -397,6 +401,24 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn dot_for_attribute_assignment() {
+        assert_eq!(
+            kinds("Washes.intensity"),
+            vec![
+                TokenKind::Ident("Washes".to_string()),
+                TokenKind::Dot,
+                TokenKind::Ident("intensity".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn dot_does_not_interfere_with_float_literals() {
+        assert_eq!(kinds("1.5"), vec![TokenKind::Float(1.5), TokenKind::Eof]);
     }
 
     #[test]

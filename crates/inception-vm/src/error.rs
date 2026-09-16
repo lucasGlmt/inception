@@ -6,7 +6,7 @@
 //! docs), so every execution-time bounds/type check still has a real
 //! failure path here instead of a `panic!`/`unwrap()`/`unreachable!()`.
 
-use lux_bytecode::{ConstantId, FunctionId, LocalId, ValueType};
+use lux_bytecode::{ConstantId, FunctionId, LocalId, TargetId, ValueType};
 
 /// Failure to even construct a runnable [`crate::Vm`] — distinct from
 /// [`VmError`] (a runtime failure *during* execution) because it isn't
@@ -72,4 +72,11 @@ pub enum VmErrorKind {
     /// through a malformed/hand-built module, since verified bytecode's
     /// call stack always matches its `Call`s.
     UnexpectedReturn,
+    /// `SetAttribute` referenced a target the `LightingState` it was
+    /// given doesn't know about (see `inception_core::LightingError`).
+    /// `lux_bytecode::verify` only bounds-checks the `TargetId` against
+    /// the module's declared `target_count` — it can't know whether the
+    /// caller's `LightingState` actually defined that target, since that
+    /// wiring happens outside the module entirely.
+    UnknownTarget(TargetId),
 }

@@ -12,7 +12,7 @@
 //! immediately and correctly, without trying to "catch up" through
 //! intermediate ticks.
 
-use inception_core::Clock;
+use inception_core::{Clock, LightingState};
 use lux_bytecode::{BytecodeModule, FunctionId, Instruction};
 
 use crate::error::{VmError, VmErrorKind, VmInitError};
@@ -132,13 +132,23 @@ impl Vm {
     /// Executes instructions until the program blocks on a `WAIT` that
     /// hasn't elapsed yet, finishes, or faults.
     ///
+    /// `lighting` is where `SET_ATTRIBUTE` commands land (see
+    /// `AGENTS.md`'s and this milestone's semantic-state/DMX separation:
+    /// the VM only ever calls `LightingState::set_target_attribute`,
+    /// never touches a DMX buffer). A program that never assigns an
+    /// attribute can just be given a fresh, empty `LightingState`.
+    ///
     /// Calling this while [`VmState::Ready`] (before `start()`),
     /// [`VmState::Finished`] or [`VmState::Faulted`] is a harmless no-op.
     /// Calling it while [`VmState::WaitingUntil`] with `clock.now()`
     /// still short of the wake-up time is also a no-op — the VM stays
     /// blocked; see the module docs for why this never tries to "catch
     /// up" through intermediate steps.
-    pub fn run_until_blocked<C: Clock>(&mut self, clock: &C) -> Result<(), VmError> {
+    pub fn run_until_blocked<C: Clock>(
+        &mut self,
+        clock: &C,
+        lighting: &mut LightingState,
+    ) -> Result<(), VmError> {
         match self.state {
             VmState::Ready | VmState::Finished | VmState::Faulted(_) => return Ok(()),
             VmState::WaitingUntil(wake_at) => {
@@ -151,7 +161,7 @@ impl Vm {
         }
 
         loop {
-            match self.execute_one(clock) {
+            match self.execute_one(clock, lighting) {
                 Ok(Step::Continue) => {}
                 Ok(Step::Wait(wake_at)) => {
                     self.state = VmState::WaitingUntil(wake_at);
@@ -189,7 +199,11 @@ impl Vm {
         )
     }
 
-    fn execute_one<C: Clock>(&mut self, clock: &C) -> Result<Step, VmError> {
+    fn execute_one<C: Clock>(
+        &mut self,
+        clock: &C,
+        lighting: &mut LightingState,
+    ) -> Result<Step, VmError> {
         let function_id = self.frame_mut().function;
         let pc = self.frame_mut().pc;
 
@@ -212,6 +226,9 @@ impl Vm {
             Instruction::Call(target) => self.exec_call(function_id, pc, target),
             Instruction::Return => Ok(self.exec_return()),
             Instruction::Pop => self.exec_pop(function_id, pc),
+            Instruction::SetAttribute { target, attribute } => {
+                self.exec_set_attribute(function_id, pc, target, attribute, lighting)
+            }
         }
     }
 
@@ -314,6 +331,43 @@ impl Vm {
             ));
         };
         Ok(Step::Wait(clock.now() + duration))
+    }
+
+    /// Pops a value, converts it to the `AttributeValue` `attribute`
+    /// declares, and applies it in `lighting` — never touching DMX (see
+    /// this module's docs). This is the only place the VM talks to the
+    /// lighting world at all.
+    fn exec_set_attribute(
+        &mut self,
+        function: FunctionId,
+        pc: usize,
+        target: lux_bytecode::TargetId,
+        attribute: lux_bytecode::Attribute,
+        lighting: &mut LightingState,
+    ) -> Result<Step, VmError> {
+        let value = self.pop(function, pc)?;
+        let found = value.value_type();
+        let attribute_value = value.into_attribute_value(attribute).ok_or_else(|| {
+            VmError::new(
+                function,
+                pc,
+                VmErrorKind::TypeMismatch {
+                    expected: attribute.value_type(),
+                    found,
+                },
+            )
+        })?;
+
+        let core_target = inception_core::TargetId(target.0);
+        lighting
+            .set_target_attribute(core_target, attribute_value)
+            .map_err(|err| match err {
+                inception_core::LightingError::UnknownTarget(_) => {
+                    VmError::new(function, pc, VmErrorKind::UnknownTarget(target))
+                }
+            })?;
+
+        Ok(Step::Continue)
     }
 
     fn exec_call(

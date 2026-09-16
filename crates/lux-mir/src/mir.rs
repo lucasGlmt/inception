@@ -27,6 +27,10 @@ pub struct MirModule {
     /// The function to start execution from — by convention, the scene
     /// named `main`, if the program has one. See `lux-mir::lower`.
     pub entry: Option<FunctionId>,
+    /// How many distinct lighting targets exist, per the
+    /// `TargetEnvironment` `lower` was given — copied straight through to
+    /// `lux_bytecode::BytecodeModule::target_count` by codegen.
+    pub target_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +97,16 @@ pub enum MirInstruction {
     Wait,
     /// Discards the top of the stack (e.g. a bare expression statement).
     Pop,
+    /// Pops a value and applies it to `attribute` on `target`, in the
+    /// semantic `LightingState` — see `lux_bytecode::Instruction::SetAttribute`,
+    /// which this lowers to directly. `TargetId` is reused from
+    /// `lux-hir` and `Attribute` from `lux-typeck`: MIR already depends
+    /// on both, so redefining either here would be pure duplication (see
+    /// `crate::ids`'s docs on why `LocalId` is reused the same way).
+    SetAttribute {
+        target: lux_hir::TargetId,
+        attribute: lux_typeck::Attribute,
+    },
 }
 
 /// A color value, normalized to RGB. `lux-hir`'s `ColorLiteral` can still

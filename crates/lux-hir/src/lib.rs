@@ -5,6 +5,7 @@
 //! dependency direction downward as required by the workspace layering
 //! rules.
 
+pub mod environment;
 pub mod error;
 pub mod hir;
 pub mod ids;
@@ -13,7 +14,8 @@ pub mod resolve;
 #[cfg(test)]
 mod tests;
 
+pub use environment::TargetEnvironment;
 pub use error::HirError;
 pub use hir::*;
-pub use ids::{LocalId, SceneId};
+pub use ids::{LocalId, SceneId, TargetId};
 pub use resolve::lower;

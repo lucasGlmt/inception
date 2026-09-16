@@ -11,7 +11,7 @@
 use lux_syntax::Span;
 use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
-use crate::ids::{LocalId, SceneId};
+use crate::ids::{LocalId, SceneId, TargetId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirFile {
@@ -59,6 +59,7 @@ pub enum HirStatement {
     Let(HirLet),
     Wait(HirWait),
     Expression(HirExprStatement),
+    Assign(HirAssign),
 }
 
 impl HirStatement {
@@ -67,6 +68,7 @@ impl HirStatement {
             HirStatement::Let(s) => s.span,
             HirStatement::Wait(s) => s.span,
             HirStatement::Expression(s) => s.span,
+            HirStatement::Assign(s) => s.span,
         }
     }
 }
@@ -86,6 +88,21 @@ pub struct HirWait {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirExprStatement {
+    pub value: HirExpr,
+    pub span: Span,
+}
+
+/// `<target>.<attribute> = <value>;`, resolved. `target` is a real
+/// [`TargetId`] (validated against a
+/// [`crate::environment::TargetEnvironment`] during lowering), but
+/// `attribute_name` stays a raw name — like [`TypeAnnotation`], whether
+/// it names a real attribute (and what type it expects) is `lux-typeck`'s
+/// call, not this crate's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirAssign {
+    pub target: TargetId,
+    pub attribute_name: String,
+    pub attribute_span: Span,
     pub value: HirExpr,
     pub span: Span,
 }

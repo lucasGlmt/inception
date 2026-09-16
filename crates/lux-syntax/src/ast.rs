@@ -50,6 +50,7 @@ pub enum Statement {
     Let(LetStatement),
     Wait(WaitStatement),
     Expression(ExpressionStatement),
+    Assign(AssignStatement),
 }
 
 impl Statement {
@@ -58,8 +59,26 @@ impl Statement {
             Statement::Let(s) => s.span,
             Statement::Wait(s) => s.span,
             Statement::Expression(s) => s.span,
+            Statement::Assign(s) => s.span,
         }
     }
+}
+
+/// `<target>.<attribute> = <value>;` — a lighting attribute assignment,
+/// e.g. `Washes.intensity = 50%;`.
+///
+/// Both `target` and `attribute` are kept as raw names, not resolved
+/// here: which target names exist depends on an externally supplied
+/// compile-time environment (see `lux_hir::TargetEnvironment` — there is
+/// deliberately no rig/patch/linker in this milestone), and which
+/// attribute names are valid is `lux-typeck`'s call, exactly like
+/// `LetStatement::type_annotation`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssignStatement {
+    pub target: Identifier,
+    pub attribute: Identifier,
+    pub value: Expression,
+    pub span: Span,
 }
 
 /// A type name written in source (e.g. `Duration` in `let x: Duration = ...`).

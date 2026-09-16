@@ -10,3 +10,11 @@ pub struct SceneId(pub u32);
 /// boundaries in this language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocalId(pub u32);
+
+/// A resolved lighting target (e.g. what `Washes` refers to in
+/// `Washes.intensity = 50%;`), file-scoped rather than scene-scoped: a
+/// target name means the same thing everywhere in a program. See
+/// [`crate::environment::TargetEnvironment`] for how a name becomes one
+/// of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TargetId(pub u32);

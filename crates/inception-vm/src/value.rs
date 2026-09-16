@@ -12,8 +12,8 @@
 //! `lux-bytecode`/`lux-typeck` boundary (which is architectural and must
 //! stay duplicated).
 
-use inception_core::Duration;
-use lux_bytecode::{ColorValue, Constant, ValueType};
+use inception_core::{AttributeValue, Duration, Intensity, Rgb};
+use lux_bytecode::{Attribute, ColorValue, Constant, ValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
@@ -64,6 +64,35 @@ impl Value {
             Constant::Tempo(t) => Value::Tempo(t),
         }
     }
+
+    /// Converts this value into a `LightingState`-ready
+    /// [`AttributeValue`] for a `SET_ATTRIBUTE` declaring `attribute` —
+    /// `None` if this value's variant doesn't match what `attribute`
+    /// expects. `lux_bytecode::verify` already guarantees this can't
+    /// happen for a verified module (`SetAttribute`'s operand type is
+    /// checked there), but `Vm` stays defensive regardless (see `error`
+    /// module docs).
+    ///
+    /// `Color` is widened from the bytecode's 8-bit-per-channel
+    /// `ColorValue` to `Rgb`'s `u16` channels by `channel * 257`: this is
+    /// the standard exact 8-to-16-bit scale (`255 * 257 == 65535`), so
+    /// `0` and `255` map to `0` and `65535` precisely, with every other
+    /// value evenly spaced in between.
+    pub fn into_attribute_value(self, attribute: Attribute) -> Option<AttributeValue> {
+        match (attribute, self) {
+            (Attribute::Intensity, Value::Intensity(raw)) => {
+                Some(AttributeValue::Intensity(Intensity::new(raw)))
+            }
+            (Attribute::Color, Value::Color(ColorValue { r, g, b })) => {
+                Some(AttributeValue::Color(Rgb {
+                    red: r as u16 * 257,
+                    green: g as u16 * 257,
+                    blue: b as u16 * 257,
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +112,45 @@ mod tests {
         assert_eq!(
             Value::from_constant(&Constant::Intensity(100)),
             Value::Intensity(100)
+        );
+    }
+
+    #[test]
+    fn matching_value_converts_to_attribute_value() {
+        assert_eq!(
+            Value::Intensity(32767).into_attribute_value(Attribute::Intensity),
+            Some(AttributeValue::Intensity(Intensity::new(32767)))
+        );
+    }
+
+    #[test]
+    fn mismatched_value_does_not_convert() {
+        assert_eq!(
+            Value::Duration(Duration::from_secs(1)).into_attribute_value(Attribute::Intensity),
+            None
+        );
+        assert_eq!(
+            Value::Color(ColorValue { r: 0, g: 0, b: 0 })
+                .into_attribute_value(Attribute::Intensity),
+            None
+        );
+    }
+
+    #[test]
+    fn color_widens_exactly_from_8_to_16_bits() {
+        let converted = Value::Color(ColorValue {
+            r: 255,
+            g: 128,
+            b: 0,
+        })
+        .into_attribute_value(Attribute::Color);
+        assert_eq!(
+            converted,
+            Some(AttributeValue::Color(Rgb {
+                red: 65535,
+                green: 32896,
+                blue: 0
+            }))
         );
     }
 }

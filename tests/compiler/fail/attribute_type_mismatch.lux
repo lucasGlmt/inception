@@ -1,0 +1,3 @@
+scene main {
+    Washes.intensity = red;
+}

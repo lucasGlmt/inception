@@ -15,7 +15,7 @@
 //! reconcile. This will need to become a proper data-flow fixpoint once
 //! `jump`/`branch` exist.
 
-use crate::ids::{ConstantId, FunctionId, LocalId};
+use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
 use crate::instruction::Instruction;
 use crate::module::{BytecodeModule, BytecodeVersion, Function};
 use crate::value::ValueType;
@@ -27,6 +27,8 @@ pub enum VerificationErrorKind {
     InvalidFunctionId(FunctionId),
     InvalidConstantId(ConstantId),
     InvalidLocalId(LocalId),
+    /// A `SetAttribute` `TargetId` is `>= module.target_count`.
+    InvalidTargetId(TargetId),
     /// Popped a value from an empty operand stack.
     StackUnderflow,
     /// The function's code needs more stack depth than its declared
@@ -270,6 +272,30 @@ fn verify_instruction(
                     index,
                     VerificationErrorKind::StackUnderflow,
                 ));
+            }
+        }
+
+        Instruction::SetAttribute { target, attribute } => {
+            if target.0 >= module.target_count {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::InvalidTargetId(target),
+                ));
+            }
+            let expected = attribute.value_type();
+            match stack.pop() {
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
+                Some(found) if found != expected => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::TypeMismatch { expected, found },
+                )),
+                Some(_) => {}
             }
         }
     }

@@ -6,6 +6,7 @@
 //! usable on its own, e.g. to load and verify a module without pulling in
 //! an entire compiler.
 
+pub mod attribute;
 pub mod disasm;
 pub mod ids;
 pub mod instruction;
@@ -16,8 +17,9 @@ pub mod verify;
 #[cfg(test)]
 mod tests;
 
+pub use attribute::Attribute;
 pub use disasm::disassemble;
-pub use ids::{ConstantId, FunctionId, LocalId};
+pub use ids::{ConstantId, FunctionId, LocalId, TargetId};
 pub use instruction::Instruction;
 pub use module::{BytecodeModule, BytecodeVersion, Function};
 pub use value::{ColorValue, Constant, ValueType};

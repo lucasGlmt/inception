@@ -66,6 +66,16 @@ impl Parser {
         &self.peek().kind
     }
 
+    /// Looks `n` tokens ahead without consuming anything. Falls back to
+    /// the trailing `Eof` if `n` runs past the end of the stream.
+    fn peek_nth_kind(&self, n: usize) -> &TokenKind {
+        &self
+            .tokens
+            .get(self.pos + n)
+            .unwrap_or_else(|| self.tokens.last().expect("token stream always has an Eof"))
+            .kind
+    }
+
     fn at_eof(&self) -> bool {
         matches!(self.peek_kind(), TokenKind::Eof)
     }
@@ -208,7 +218,34 @@ impl Parser {
         match self.peek_kind() {
             TokenKind::Let => Statement::Let(self.parse_let_statement()),
             TokenKind::Wait => Statement::Wait(self.parse_wait_statement()),
+            TokenKind::Ident(_) if *self.peek_nth_kind(1) == TokenKind::Dot => {
+                Statement::Assign(self.parse_assign_statement())
+            }
             _ => Statement::Expression(self.parse_expression_statement()),
+        }
+    }
+
+    /// `<target>.<attribute> = <value>;`. Only recognized in this exact
+    /// statement position: `.` is not a general expression operator in
+    /// this language (no member-access expressions exist), so there's no
+    /// ambiguity to resolve against `parse_expression`.
+    fn parse_assign_statement(&mut self) -> AssignStatement {
+        let target = self.expect_identifier("expected target name");
+        let start = target.span.start;
+        self.expect(TokenKind::Dot, "expected `.` after target name");
+        let attribute = self.expect_identifier("expected attribute name");
+        self.expect(TokenKind::Eq, "expected `=` in attribute assignment");
+        let value = self.parse_expression();
+        let semi = self.expect(
+            TokenKind::Semicolon,
+            "expected `;` after attribute assignment",
+        );
+        let end = semi.map(|t| t.span.end).unwrap_or(value.span().end);
+        AssignStatement {
+            target,
+            attribute,
+            value,
+            span: Span::new(start, end),
         }
     }
 
@@ -567,6 +604,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_attribute_assignment() {
+        let src = "scene main { Washes.intensity = 50%; }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        assert_eq!(scene.body.statements.len(), 1);
+        match &scene.body.statements[0] {
+            Statement::Assign(assign) => {
+                assert_eq!(assign.target.name, "Washes");
+                assert_eq!(assign.attribute.name, "intensity");
+                assert_eq!(
+                    assign.value,
+                    Expression::Literal(Literal::Intensity(50), assign.value.span())
+                );
+            }
+            other => panic!("expected assign statement, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn missing_scene_name_is_an_error() {
         let result = parse("scene { }");
         assert!(result.is_err());
@@ -603,6 +659,9 @@ mod tests {
             "scene main { wait 1 + ; }",
             "@#$%",
             "scene main { foo(1, ; }",
+            "scene main { Washes. = 1; }",
+            "scene main { Washes.intensity = ; }",
+            "scene main { . = 1; }",
         ];
         for input in inputs {
             let _ = parse(input); // must not panic

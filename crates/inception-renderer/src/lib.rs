@@ -1,14 +1,29 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Converts semantic lighting state into DMX universe buffers.
+//!
+//! ```text
+//! LightingState (inception-core)
+//!       +
+//! ResolvedRig (already physically resolved — no linker yet)
+//!       ↓
+//!   render()
+//!       ↓
+//! UniverseFrame (per universe)
+//! ```
+//!
+//! Never parses Lux, never does name resolution, never knows a role or
+//! rig by name, and never talks to a physical device — see this crate's
+//! module docs and `AGENTS.md`'s lighting-state/DMX separation.
+//! `inception-driver-dmx` is the next layer down, consuming
+//! [`UniverseFrame`] to actually send (or, for now, just record) it.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod convert;
+pub mod dmx_channel;
+pub mod frame;
+pub mod mapping;
+pub mod render;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use convert::{intensity_to_dmx8, u16_to_dmx8};
+pub use dmx_channel::DmxChannel;
+pub use frame::UniverseFrame;
+pub use mapping::{DmxChannelMapping, ResolvedFixture, ResolvedRig, RgbChannelMapping};
+pub use render::render;
