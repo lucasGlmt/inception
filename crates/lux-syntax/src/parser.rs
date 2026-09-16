@@ -27,6 +27,20 @@ use crate::token::{Token, TokenKind, Unit};
 /// returns every diagnostic collected while lexing and parsing (there may
 /// be more than one).
 pub fn parse(source: &str) -> Result<SourceFile, Vec<SyntaxError>> {
+    let (file, errors) = parse_recovering(source);
+
+    if errors.is_empty() {
+        Ok(file)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Parses a Lux file and always returns the recovered syntax tree together
+/// with its diagnostics. This is the parser entry point used by IDE tooling:
+/// compiler callers should continue to use [`parse`], which rejects a tree
+/// containing placeholders.
+pub fn parse_recovering(source: &str) -> (SourceFile, Vec<SyntaxError>) {
     let (tokens, lex_errors) = tokenize(source);
     let mut parser = Parser::new(tokens);
     let file = parser.parse_source_file();
@@ -34,11 +48,7 @@ pub fn parse(source: &str) -> Result<SourceFile, Vec<SyntaxError>> {
     let mut errors = lex_errors;
     errors.extend(parser.errors);
 
-    if errors.is_empty() {
-        Ok(file)
-    } else {
-        Err(errors)
-    }
+    (file, errors)
 }
 
 struct Parser {

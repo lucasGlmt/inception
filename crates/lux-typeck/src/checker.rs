@@ -174,10 +174,7 @@ impl Checker {
         attribute: Attribute,
         span: Span,
     ) {
-        let required = match attribute {
-            Attribute::Intensity => lux_hir::Capability::Intensity,
-            Attribute::Color => lux_hir::Capability::Color,
-        };
+        let required = attribute.required_capability();
         if let Some(capabilities) = self.role_capabilities.get(&target)
             && !capabilities.contains(required)
         {

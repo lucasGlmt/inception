@@ -14,5 +14,5 @@ pub mod token;
 
 pub use ast::SourceFile;
 pub use error::SyntaxError;
-pub use parser::parse;
+pub use parser::{parse, parse_recovering};
 pub use span::{Span, Spanned};

@@ -40,6 +40,15 @@ impl Attribute {
             Attribute::Color => Type::Color,
         }
     }
+
+    /// Capability required to read or write this attribute. Tooling uses
+    /// this API instead of maintaining a second attribute/capability table.
+    pub fn required_capability(self) -> lux_hir::Capability {
+        match self {
+            Attribute::Intensity => lux_hir::Capability::Intensity,
+            Attribute::Color => lux_hir::Capability::Color,
+        }
+    }
 }
 
 impl fmt::Display for Attribute {

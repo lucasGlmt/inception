@@ -1,0 +1,52 @@
+{
+  "name": "lux-language-support",
+  "displayName": "Lux Language Support",
+  "description": "Language support for Lux real-time lighting programs",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:lux"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "lux",
+      "aliases": ["Lux", "lux"],
+      "extensions": [".lux"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "lux",
+      "scopeName": "source.lux",
+      "path": "./syntaxes/lux.tmLanguage.json"
+    }],
+    "configuration": {
+      "title": "Lux",
+      "properties": {
+        "lux.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit path to the lux-lsp executable. Empty uses PATH, then target/debug/lux-lsp in the workspace."
+        },
+        "lux.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace communication with lux-lsp."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "typecheck": "tsc -p ./ --noEmit",
+    "build": "npm run compile",
+    "lint": "tsc -p ./ --noEmit"
+  },
+  "dependencies": { "vscode-languageclient": "^9.0.1" },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
