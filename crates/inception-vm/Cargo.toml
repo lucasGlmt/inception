@@ -1,6 +1,18 @@
 [package]
 name = "inception-vm"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+inception-core.workspace = true
+lux-bytecode.workspace = true
+
+# Test-only: exercises the real Lux -> bytecode pipeline end to end (see
+# tests/e2e_lux.rs). The VM's own library code never depends on the
+# compiler — this dependency direction (lux-bytecode -> inception-vm,
+# never the reverse) is unaffected since dev-dependencies aren't part of
+# the published crate's dependency graph.
+[dev-dependencies]
+lux-compiler.workspace = true

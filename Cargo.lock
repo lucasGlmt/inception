@@ -29,6 +29,11 @@ version = "0.1.0"
 [[package]]
 name = "inception-vm"
 version = "0.1.0"
+dependencies = [
+ "inception-core",
+ "lux-bytecode",
+ "lux-compiler",
+]
 
 [[package]]
 name = "lux-bytecode"
