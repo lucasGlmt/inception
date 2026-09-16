@@ -60,6 +60,7 @@ pub enum HirStatement {
     Wait(HirWait),
     Expression(HirExprStatement),
     Assign(HirAssign),
+    Transition(HirTransition),
 }
 
 impl HirStatement {
@@ -69,6 +70,7 @@ impl HirStatement {
             HirStatement::Wait(s) => s.span,
             HirStatement::Expression(s) => s.span,
             HirStatement::Assign(s) => s.span,
+            HirStatement::Transition(s) => s.span,
         }
     }
 }
@@ -104,6 +106,16 @@ pub struct HirAssign {
     pub attribute_name: String,
     pub attribute_span: Span,
     pub value: HirExpr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirTransition {
+    pub target: TargetId,
+    pub attribute_name: String,
+    pub attribute_span: Span,
+    pub value: HirExpr,
+    pub duration: HirExpr,
     pub span: Span,
 }
 

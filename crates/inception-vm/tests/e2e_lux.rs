@@ -12,7 +12,7 @@
 //! `lighting_pipeline.rs` in this same directory takes this one step
 //! further, all the way through to a rendered DMX frame.
 
-use inception_core::{Duration, LightingState, Timestamp, VirtualClock};
+use inception_core::{Duration, LightingState, Timestamp, TransitionEngine, VirtualClock};
 use inception_vm::Vm;
 use lux_compiler::TargetEnvironment;
 
@@ -29,16 +29,19 @@ fn lux_program_waits_then_finishes() {
 
     let clock = VirtualClock::new();
     let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
     let mut vm = Vm::new(module).unwrap();
 
     vm.start().unwrap();
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
 
     assert!(vm.is_waiting());
 
     clock.advance(Duration::from_secs(1));
 
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
 
     assert!(vm.is_finished());
 }
@@ -61,10 +64,12 @@ fn compiler_task_brief_worked_example_runs_to_completion() {
     let module = lux_compiler::compile(source, &TargetEnvironment::new()).unwrap();
     let clock = VirtualClock::new();
     let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
     let mut vm = Vm::new(module).unwrap();
 
     vm.start().unwrap();
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
     assert!(vm.is_waiting());
     assert_eq!(
         vm.state(),
@@ -72,15 +77,18 @@ fn compiler_task_brief_worked_example_runs_to_completion() {
     );
 
     clock.advance(Duration::from_secs(1));
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
     assert!(vm.is_waiting(), "1.0s elapsed but the wake-up time is 1.5s");
 
     clock.advance(Duration::from_millis(499));
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
     assert!(vm.is_waiting(), "1.499s elapsed, still short of 1.5s");
 
     clock.advance(Duration::from_millis(1));
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
     assert!(vm.is_finished(), "1.500s elapsed, the wait is over");
 }
 
@@ -95,10 +103,12 @@ fn a_scene_with_no_wait_finishes_on_the_first_run() {
     let module = lux_compiler::compile(source, &TargetEnvironment::new()).unwrap();
     let clock = VirtualClock::new();
     let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
     let mut vm = Vm::new(module).unwrap();
 
     vm.start().unwrap();
-    vm.run_until_blocked(&clock, &mut lighting).unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
 
     assert!(vm.is_finished());
 }

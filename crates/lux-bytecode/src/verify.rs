@@ -29,6 +29,8 @@ pub enum VerificationErrorKind {
     InvalidLocalId(LocalId),
     /// A `SetAttribute` `TargetId` is `>= module.target_count`.
     InvalidTargetId(TargetId),
+    /// V1 only defines interpolation for intensity.
+    UnsupportedTransitionAttribute(crate::Attribute),
     /// Popped a value from an empty operand stack.
     StackUnderflow,
     /// The function's code needs more stack depth than its declared
@@ -296,6 +298,55 @@ fn verify_instruction(
                     VerificationErrorKind::TypeMismatch { expected, found },
                 )),
                 Some(_) => {}
+            }
+        }
+        Instruction::TransitionAttribute { target, attribute } => {
+            if target.0 >= module.target_count {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::InvalidTargetId(target),
+                ));
+            }
+            if attribute != crate::Attribute::Intensity {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::UnsupportedTransitionAttribute(attribute),
+                ));
+            }
+
+            // Codegen pushes value then duration, so duration is popped first.
+            match stack.pop() {
+                Some(ValueType::Duration) => {}
+                Some(found) => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::TypeMismatch {
+                        expected: ValueType::Duration,
+                        found,
+                    },
+                )),
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
+            }
+
+            let expected = attribute.value_type();
+            match stack.pop() {
+                Some(found) if found != expected => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::TypeMismatch { expected, found },
+                )),
+                Some(_) => {}
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
             }
         }
     }

@@ -61,6 +61,15 @@ impl LightingState {
         self.targets.insert(id, target);
     }
 
+    /// Returns the already-resolved fixture IDs for a target. Transition
+    /// creation uses this once per command; sampling remains fixture-ID based.
+    pub fn target_fixtures(&self, target: TargetId) -> Result<&[FixtureId], LightingError> {
+        self.targets
+            .get(&target)
+            .map(|resolved| resolved.fixtures.as_slice())
+            .ok_or(LightingError::UnknownTarget(target))
+    }
+
     /// Applies `value` to every fixture `target` resolves to.
     pub fn set_target_attribute(
         &mut self,

@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 
 use inception_core::{
-    FixtureId, LightingState, ResolvedTarget, TargetId, UniverseId, VirtualClock,
+    Duration, FixtureId, LightingState, ResolvedTarget, TargetId, TransitionEngine, UniverseId,
+    VirtualClock,
 };
 use inception_driver_dmx::{DmxOutput, RecordingDmxOutput};
 use inception_renderer::{DmxChannel, DmxChannelMapping, ResolvedFixture, ResolvedRig};
@@ -95,8 +96,9 @@ fn lux_attribute_assignment_produces_the_expected_dmx_frame() {
 
     let clock = VirtualClock::new();
     let mut vm = Vm::new(module).expect("module should be valid");
+    let mut transitions = TransitionEngine::new();
     vm.start().expect("entry function should exist");
-    vm.run_until_blocked(&clock, &mut env.lighting)
+    vm.run_until_blocked(&clock, &mut env.lighting, &mut transitions)
         .expect("program has no WAIT, should run to completion");
     assert!(vm.is_finished());
 
@@ -185,4 +187,90 @@ fn malformed_hand_built_set_attribute_is_rejected_before_execution() {
         Vm::new(module),
         Err(inception_vm::VmInitError::Verification(_))
     ));
+}
+
+fn render_and_record(env: &TestRig, output: &mut RecordingDmxOutput) {
+    let mut frames = HashMap::new();
+    inception_renderer::render(&env.lighting, &env.rig, &mut frames);
+    for (universe, frame) in &frames {
+        output.send(*universe, frame).unwrap();
+    }
+}
+
+#[test]
+fn lux_transition_samples_to_virtual_dmx_at_absolute_times() {
+    let source = "scene main { Washes.intensity -> 100% over 2s; }";
+    let mut env = washes_two_fixtures_one_universe();
+    let module = lux_compiler::compile(source, &env.targets).unwrap();
+    let clock = VirtualClock::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut env.lighting, &mut transitions)
+        .unwrap();
+
+    assert!(vm.is_finished(), "transitions are non-blocking");
+    assert_eq!(transitions.active_count(), 2);
+    let mut output = RecordingDmxOutput::new();
+    for (advance_ms, expected_dmx) in [(0, 0), (500, 64), (500, 128), (500, 192), (500, 255)] {
+        clock.advance(Duration::from_millis(advance_ms));
+        transitions
+            .sample(inception_core::Clock::now(&clock), &mut env.lighting)
+            .unwrap();
+        render_and_record(&env, &mut output);
+        let frame = output.last_frame(UniverseId(1)).unwrap();
+        assert_eq!(frame[0], expected_dmx);
+        assert_eq!(frame[4], expected_dmx);
+    }
+    assert_eq!(transitions.active_count(), 0);
+
+    clock.advance(Duration::from_millis(500));
+    transitions
+        .sample(inception_core::Clock::now(&clock), &mut env.lighting)
+        .unwrap();
+    render_and_record(&env, &mut output);
+    assert_eq!(output.last_frame(UniverseId(1)).unwrap()[0], 255);
+}
+
+#[test]
+fn missed_render_frames_do_not_cause_transition_drift() {
+    let source = "scene main { Washes.intensity -> 100% over 2s; }";
+    let mut env = washes_two_fixtures_one_universe();
+    let module = lux_compiler::compile(source, &env.targets).unwrap();
+    let clock = VirtualClock::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut env.lighting, &mut transitions)
+        .unwrap();
+
+    let mut output = RecordingDmxOutput::new();
+    for (advance_ms, expected_dmx) in [(0, 0), (1750, 224), (750, 255)] {
+        clock.advance(Duration::from_millis(advance_ms));
+        transitions
+            .sample(inception_core::Clock::now(&clock), &mut env.lighting)
+            .unwrap();
+        render_and_record(&env, &mut output);
+        let frame = output.last_frame(UniverseId(1)).unwrap();
+        assert_eq!(frame[0], expected_dmx);
+        assert_eq!(frame[4], expected_dmx);
+    }
+    assert_eq!(transitions.active_count(), 0);
+}
+
+#[test]
+fn transition_type_errors_never_reach_bytecode() {
+    let env = washes_two_fixtures_one_universe();
+    for source in [
+        "scene main { Washes.intensity -> red over 2s; }",
+        "scene main { Washes.intensity -> 100% over red; }",
+        "scene main { Washes.intensity -> 100% over 50%; }",
+    ] {
+        let diagnostics = lux_compiler::compile(source, &env.targets).unwrap_err();
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.stage == lux_compiler::Stage::Type)
+        );
+    }
 }

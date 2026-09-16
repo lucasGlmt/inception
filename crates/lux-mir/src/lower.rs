@@ -116,6 +116,21 @@ fn lower_statement(stmt: &HirStatement, local_types: &[Type], out: &mut Vec<MirI
                 attribute,
             });
         }
+        HirStatement::Transition(transition) => {
+            lower_expr(&transition.value, local_types, out);
+            lower_expr(&transition.duration, local_types, out);
+            let attribute = lux_typeck::Attribute::from_name(&transition.attribute_name)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "lower: transition attribute `{}` should already be valid",
+                        transition.attribute_name
+                    )
+                });
+            out.push(MirInstruction::TransitionAttribute {
+                target: transition.target,
+                attribute,
+            });
+        }
     }
 }
 

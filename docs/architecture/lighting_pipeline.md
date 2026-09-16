@@ -8,7 +8,9 @@ documentation lives as rustdoc on `inception_core::lighting_state`,
 
 ```text
 VM (inception-vm)
- ↓  SET_ATTRIBUTE -> LightingState::set_target_attribute
+ ↓  SET_ATTRIBUTE / TRANSITION_ATTRIBUTE
+TransitionEngine (inception-core)      — absolute-time overlays
+ ↓  sample(now, &mut state)
 LightingState (inception-core)         — semantic, no DMX knowledge
  ↓  render(state, &ResolvedRig, &mut frames)
 Renderer (inception-renderer)
@@ -17,6 +19,9 @@ UniverseFrame (one per universe)
  ↓
 DmxOutput (inception-driver-dmx)       — Null or Recording, no hardware
 ```
+
+Transition commands and their absolute-time replacement semantics are detailed
+in [Transition model](transitions.md).
 
 ## Semantic lighting state
 

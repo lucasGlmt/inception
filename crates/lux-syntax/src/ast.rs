@@ -51,6 +51,7 @@ pub enum Statement {
     Wait(WaitStatement),
     Expression(ExpressionStatement),
     Assign(AssignStatement),
+    Transition(TransitionStatement),
 }
 
 impl Statement {
@@ -60,6 +61,7 @@ impl Statement {
             Statement::Wait(s) => s.span,
             Statement::Expression(s) => s.span,
             Statement::Assign(s) => s.span,
+            Statement::Transition(s) => s.span,
         }
     }
 }
@@ -78,6 +80,16 @@ pub struct AssignStatement {
     pub target: Identifier,
     pub attribute: Identifier,
     pub value: Expression,
+    pub span: Span,
+}
+
+/// `<target>.<attribute> -> <value> over <duration>;`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionStatement {
+    pub target: Identifier,
+    pub attribute: Identifier,
+    pub value: Expression,
+    pub duration: Expression,
     pub span: Span,
 }
 

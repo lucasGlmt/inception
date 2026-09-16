@@ -12,7 +12,7 @@
 //! immediately and correctly, without trying to "catch up" through
 //! intermediate ticks.
 
-use inception_core::{Clock, LightingState};
+use inception_core::{Clock, LightingState, TransitionEngine};
 use lux_bytecode::{BytecodeModule, FunctionId, Instruction};
 
 use crate::error::{VmError, VmErrorKind, VmInitError};
@@ -148,6 +148,7 @@ impl Vm {
         &mut self,
         clock: &C,
         lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
     ) -> Result<(), VmError> {
         match self.state {
             VmState::Ready | VmState::Finished | VmState::Faulted(_) => return Ok(()),
@@ -161,7 +162,7 @@ impl Vm {
         }
 
         loop {
-            match self.execute_one(clock, lighting) {
+            match self.execute_one(clock, lighting, transitions) {
                 Ok(Step::Continue) => {}
                 Ok(Step::Wait(wake_at)) => {
                     self.state = VmState::WaitingUntil(wake_at);
@@ -203,6 +204,7 @@ impl Vm {
         &mut self,
         clock: &C,
         lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
     ) -> Result<Step, VmError> {
         let function_id = self.frame_mut().function;
         let pc = self.frame_mut().pc;
@@ -227,8 +229,18 @@ impl Vm {
             Instruction::Return => Ok(self.exec_return()),
             Instruction::Pop => self.exec_pop(function_id, pc),
             Instruction::SetAttribute { target, attribute } => {
-                self.exec_set_attribute(function_id, pc, target, attribute, lighting)
+                self.exec_set_attribute(function_id, pc, target, attribute, lighting, transitions)
             }
+            Instruction::TransitionAttribute { target, attribute } => self
+                .exec_transition_attribute(
+                    function_id,
+                    pc,
+                    target,
+                    attribute,
+                    clock,
+                    lighting,
+                    transitions,
+                ),
         }
     }
 
@@ -344,6 +356,7 @@ impl Vm {
         target: lux_bytecode::TargetId,
         attribute: lux_bytecode::Attribute,
         lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
     ) -> Result<Step, VmError> {
         let value = self.pop(function, pc)?;
         let found = value.value_type();
@@ -359,14 +372,59 @@ impl Vm {
         })?;
 
         let core_target = inception_core::TargetId(target.0);
-        lighting
-            .set_target_attribute(core_target, attribute_value)
-            .map_err(|err| match err {
-                inception_core::LightingError::UnknownTarget(_) => {
-                    VmError::new(function, pc, VmErrorKind::UnknownTarget(target))
-                }
-            })?;
+        transitions
+            .set_target_attribute(core_target, attribute_value, lighting)
+            .map_err(|err| transition_error(function, pc, target, err))?;
 
+        Ok(Step::Continue)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_transition_attribute<C: Clock>(
+        &mut self,
+        function: FunctionId,
+        pc: usize,
+        target: lux_bytecode::TargetId,
+        attribute: lux_bytecode::Attribute,
+        clock: &C,
+        lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
+    ) -> Result<Step, VmError> {
+        // The bytecode contract is value, duration, opcode; therefore the
+        // duration is at the top of the stack and is popped first.
+        let duration_value = self.pop(function, pc)?;
+        let Value::Duration(duration) = duration_value else {
+            return Err(VmError::new(
+                function,
+                pc,
+                VmErrorKind::TypeMismatch {
+                    expected: lux_bytecode::ValueType::Duration,
+                    found: duration_value.value_type(),
+                },
+            ));
+        };
+        let value = self.pop(function, pc)?;
+        let found = value.value_type();
+        let attribute_value = value.into_attribute_value(attribute).ok_or_else(|| {
+            VmError::new(
+                function,
+                pc,
+                VmErrorKind::TypeMismatch {
+                    expected: attribute.value_type(),
+                    found,
+                },
+            )
+        })?;
+
+        transitions
+            .start_transition(
+                clock.now(),
+                inception_core::TargetId(target.0),
+                attribute_value,
+                duration,
+                lighting,
+            )
+            .map_err(|err| transition_error(function, pc, target, err))?;
         Ok(Step::Continue)
     }
 
@@ -405,6 +463,25 @@ impl Vm {
         self.pop(function, pc)?;
         Ok(Step::Continue)
     }
+}
+
+fn transition_error(
+    function: FunctionId,
+    pc: usize,
+    target: lux_bytecode::TargetId,
+    error: inception_core::TransitionError,
+) -> VmError {
+    let kind = match error {
+        inception_core::TransitionError::UnknownTarget(_) => VmErrorKind::UnknownTarget(target),
+        inception_core::TransitionError::UnsupportedAttribute(_) => {
+            VmErrorKind::UnsupportedTransitionAttribute
+        }
+        inception_core::TransitionError::InvalidTransitionValue => {
+            VmErrorKind::InvalidTransitionValue
+        }
+        inception_core::TransitionError::ClockOverflow => VmErrorKind::ClockOverflow,
+    };
+    VmError::new(function, pc, kind)
 }
 
 /// Executes a binary arithmetic op over two runtime values.

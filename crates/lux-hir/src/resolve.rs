@@ -29,8 +29,8 @@ use lux_syntax::ast::{self, Expression, Item, SourceFile, Statement};
 use crate::environment::TargetEnvironment;
 use crate::error::HirError;
 use crate::hir::{
-    HirAssign, HirExpr, HirExprStatement, HirFile, HirLet, HirScene, HirStatement, HirWait,
-    LocalDecl, TypeAnnotation,
+    HirAssign, HirExpr, HirExprStatement, HirFile, HirLet, HirScene, HirStatement, HirTransition,
+    HirWait, LocalDecl, TypeAnnotation,
 };
 use crate::ids::{LocalId, SceneId};
 
@@ -138,7 +138,38 @@ impl Lowering<'_> {
                 .lower_expr_statement(scope, expr_stmt)
                 .map(HirStatement::Expression),
             Statement::Assign(assign) => self.lower_assign(scope, assign).map(HirStatement::Assign),
+            Statement::Transition(transition) => self
+                .lower_transition(scope, transition)
+                .map(HirStatement::Transition),
         }
+    }
+
+    fn lower_transition(
+        &mut self,
+        scope: &Scope,
+        transition: &ast::TransitionStatement,
+    ) -> Option<HirTransition> {
+        let value = self.resolve_expr(scope, &transition.value);
+        let duration = self.resolve_expr(scope, &transition.duration);
+        let target = match self.targets.resolve(&transition.target.name) {
+            Some(target) => Some(target),
+            None => {
+                self.errors.push(HirError::new(
+                    format!("unknown target `{}`", transition.target.name),
+                    transition.target.span,
+                ));
+                None
+            }
+        };
+
+        Some(HirTransition {
+            target: target?,
+            attribute_name: transition.attribute.name.clone(),
+            attribute_span: transition.attribute.span,
+            value: value?,
+            duration: duration?,
+            span: transition.span,
+        })
     }
 
     fn lower_assign(&mut self, scope: &Scope, assign: &ast::AssignStatement) -> Option<HirAssign> {

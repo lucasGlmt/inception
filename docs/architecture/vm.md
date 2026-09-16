@@ -51,7 +51,8 @@ timestamp (`clock.now() + duration`), moves the VM to
 `WaitingUntil(wake_at)`, and returns control to the caller — there is no
 `sleep()`, no busy loop, and no `remaining -= tick` countdown.
 
-`run_until_blocked(&clock)` compares `clock.now()` against `wake_at` on
+`run_until_blocked(&clock, &mut lighting, &mut transitions)` compares
+`clock.now()` against `wake_at` on
 each call: too early is a no-op (still blocked), and once elapsed the VM
 resumes exactly after the `WAIT` instruction (the frame's `pc` already
 points past it). A runtime that polls late — e.g. advancing the clock by

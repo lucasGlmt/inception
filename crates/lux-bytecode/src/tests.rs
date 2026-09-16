@@ -397,3 +397,59 @@ fn set_attribute_on_empty_stack_is_a_stack_underflow() {
             .any(|e| e.kind == VerificationErrorKind::StackUnderflow)
     );
 }
+
+#[test]
+fn valid_intensity_transition_passes() {
+    let mut module = function_with(
+        vec![
+            Constant::Intensity(u16::MAX),
+            Constant::Duration(2_000_000_000),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::TransitionAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        2,
+    );
+    module.target_count = 1;
+    verify(&module).unwrap();
+}
+
+#[test]
+fn transition_rejects_wrong_value_and_duration_types() {
+    let mut module = function_with(
+        vec![
+            Constant::Color(crate::ColorValue { r: 255, g: 0, b: 0 }),
+            Constant::Intensity(32768),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::TransitionAttribute {
+                target: TargetId(0),
+                attribute: Attribute::Intensity,
+            },
+            Instruction::Return,
+        ],
+        2,
+    );
+    module.target_count = 1;
+    let errors = verify(&module).unwrap_err();
+    assert!(errors.iter().any(|error| error.kind
+        == VerificationErrorKind::TypeMismatch {
+            expected: ValueType::Duration,
+            found: ValueType::Intensity,
+        }));
+    assert!(errors.iter().any(|error| error.kind
+        == VerificationErrorKind::TypeMismatch {
+            expected: ValueType::Intensity,
+            found: ValueType::Color,
+        }));
+}

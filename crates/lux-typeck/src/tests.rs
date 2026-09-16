@@ -289,3 +289,58 @@ fn color_attribute_assignment_passes() {
         check_source_with_targets("scene main { Washes.color = red; }", &washes_environment());
     assert!(result.is_ok(), "unexpected errors: {result:?}");
 }
+
+#[test]
+fn intensity_transition_with_duration_passes() {
+    let result = check_source_with_targets(
+        "scene main { Washes.intensity -> 100% over 2s; }",
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn transition_checks_value_and_duration_independently() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.intensity -> red over 50%; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Intensity`, found `Color`"))
+    );
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("transition duration expects `Duration`, found `Intensity`")
+    }));
+}
+
+#[test]
+fn transition_rejects_duration_as_intensity_value() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.intensity -> 1s over 2s; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Intensity`, found `Duration`"))
+    );
+}
+
+#[test]
+fn color_transition_is_explicitly_out_of_scope_for_v1() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.color -> red over 2s; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("not supported yet"))
+    );
+}

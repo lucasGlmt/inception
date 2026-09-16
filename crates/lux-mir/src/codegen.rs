@@ -104,60 +104,64 @@ impl Builder {
         depth: &mut usize,
         max_stack: &mut usize,
     ) {
-        // Every arithmetic/store/wait/pop instruction pops exactly one
-        // more value than it pushes (they all take one operand and push
-        // at most nothing extra); only `Const`/`LoadLocal` are net pushes.
-        let net_pushes = match instruction {
+        let stack_delta: i8 = match instruction {
             MirInstruction::Const(constant) => {
                 let id = self.intern(to_bytecode_constant(*constant));
                 code.push(Instruction::Const(id));
-                true
+                1
             }
             MirInstruction::LoadLocal(id) => {
                 code.push(Instruction::LoadLocal(to_bytecode_local_id(*id)));
-                true
+                1
             }
             MirInstruction::StoreLocal(id) => {
                 code.push(Instruction::StoreLocal(to_bytecode_local_id(*id)));
-                false
+                -1
             }
             MirInstruction::Add => {
                 code.push(Instruction::Add);
-                false
+                -1
             }
             MirInstruction::Sub => {
                 code.push(Instruction::Sub);
-                false
+                -1
             }
             MirInstruction::Mul => {
                 code.push(Instruction::Mul);
-                false
+                -1
             }
             MirInstruction::Div => {
                 code.push(Instruction::Div);
-                false
+                -1
             }
             MirInstruction::Wait => {
                 code.push(Instruction::Wait);
-                false
+                -1
             }
             MirInstruction::Pop => {
                 code.push(Instruction::Pop);
-                false
+                -1
             }
             MirInstruction::SetAttribute { target, attribute } => {
                 code.push(Instruction::SetAttribute {
                     target: to_bytecode_target_id(*target),
                     attribute: to_bytecode_attribute(*attribute),
                 });
-                false
+                -1
+            }
+            MirInstruction::TransitionAttribute { target, attribute } => {
+                code.push(Instruction::TransitionAttribute {
+                    target: to_bytecode_target_id(*target),
+                    attribute: to_bytecode_attribute(*attribute),
+                });
+                -2
             }
         };
 
-        if net_pushes {
-            *depth += 1;
+        if stack_delta > 0 {
+            *depth += stack_delta as usize;
         } else {
-            *depth = depth.saturating_sub(1);
+            *depth = depth.saturating_sub((-stack_delta) as usize);
         }
         *max_stack = (*max_stack).max(*depth);
     }

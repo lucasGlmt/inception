@@ -22,7 +22,9 @@
 
 use std::collections::HashMap;
 
-use lux_hir::{HirAssign, HirExpr, HirFile, HirLet, HirScene, HirStatement, HirWait, LocalId};
+use lux_hir::{
+    HirAssign, HirExpr, HirFile, HirLet, HirScene, HirStatement, HirTransition, HirWait, LocalId,
+};
 use lux_syntax::Span;
 use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
@@ -99,6 +101,59 @@ impl Checker {
                 self.infer(local_types, &expr_stmt.value);
             }
             HirStatement::Assign(assign) => self.check_assign(local_types, assign),
+            HirStatement::Transition(transition) => self.check_transition(local_types, transition),
+        }
+    }
+
+    fn check_transition(
+        &mut self,
+        local_types: &HashMap<LocalId, Type>,
+        transition: &HirTransition,
+    ) {
+        // Infer independently so an invalid value does not hide an invalid
+        // duration (and vice versa).
+        let value_ty = self.infer(local_types, &transition.value);
+        let duration_ty = self.infer(local_types, &transition.duration);
+
+        let Some(attribute) = Attribute::from_name(&transition.attribute_name) else {
+            self.errors.push(TypeError::new(
+                format!("unknown attribute `{}`", transition.attribute_name),
+                transition.attribute_span,
+            ));
+            return;
+        };
+
+        if attribute != Attribute::Intensity {
+            self.errors.push(
+                TypeError::new(
+                    format!("transitions for `{attribute}` are not supported yet"),
+                    transition.attribute_span,
+                )
+                .with_help("V1 transitions support `Intensity` only"),
+            );
+        }
+
+        let expected = attribute.value_type();
+        if let Some(found) = value_ty
+            && found != expected
+        {
+            self.errors.push(
+                TypeError::new(
+                    format!("expected `{expected}`, found `{found}`"),
+                    transition.value.span(),
+                )
+                .with_secondary_span(transition.attribute_span)
+                .with_help(format!("`{attribute}` expects `{expected}`")),
+            );
+        }
+
+        if let Some(found) = duration_ty
+            && found != Type::Duration
+        {
+            self.errors.push(TypeError::new(
+                format!("transition duration expects `Duration`, found `{found}`"),
+                transition.duration.span(),
+            ));
         }
     }
 

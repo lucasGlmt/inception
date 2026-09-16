@@ -219,33 +219,46 @@ impl Parser {
             TokenKind::Let => Statement::Let(self.parse_let_statement()),
             TokenKind::Wait => Statement::Wait(self.parse_wait_statement()),
             TokenKind::Ident(_) if *self.peek_nth_kind(1) == TokenKind::Dot => {
-                Statement::Assign(self.parse_assign_statement())
+                self.parse_attribute_statement()
             }
             _ => Statement::Expression(self.parse_expression_statement()),
         }
     }
 
-    /// `<target>.<attribute> = <value>;`. Only recognized in this exact
-    /// statement position: `.` is not a general expression operator in
-    /// this language (no member-access expressions exist), so there's no
-    /// ambiguity to resolve against `parse_expression`.
-    fn parse_assign_statement(&mut self) -> AssignStatement {
+    fn parse_attribute_statement(&mut self) -> Statement {
         let target = self.expect_identifier("expected target name");
         let start = target.span.start;
         self.expect(TokenKind::Dot, "expected `.` after target name");
         let attribute = self.expect_identifier("expected attribute name");
-        self.expect(TokenKind::Eq, "expected `=` in attribute assignment");
-        let value = self.parse_expression();
-        let semi = self.expect(
-            TokenKind::Semicolon,
-            "expected `;` after attribute assignment",
-        );
-        let end = semi.map(|t| t.span.end).unwrap_or(value.span().end);
-        AssignStatement {
-            target,
-            attribute,
-            value,
-            span: Span::new(start, end),
+
+        if self.check(TokenKind::Arrow) {
+            self.advance();
+            let value = self.parse_expression();
+            self.expect(TokenKind::Over, "expected `over` after transition value");
+            let duration = self.parse_expression();
+            let semi = self.expect(TokenKind::Semicolon, "expected `;` after transition");
+            let end = semi.map(|t| t.span.end).unwrap_or(duration.span().end);
+            Statement::Transition(TransitionStatement {
+                target,
+                attribute,
+                value,
+                duration,
+                span: Span::new(start, end),
+            })
+        } else {
+            self.expect(TokenKind::Eq, "expected `=` or `->` after attribute name");
+            let value = self.parse_expression();
+            let semi = self.expect(
+                TokenKind::Semicolon,
+                "expected `;` after attribute assignment",
+            );
+            let end = semi.map(|t| t.span.end).unwrap_or(value.span().end);
+            Statement::Assign(AssignStatement {
+                target,
+                attribute,
+                value,
+                span: Span::new(start, end),
+            })
         }
     }
 
@@ -619,6 +632,40 @@ mod tests {
                 );
             }
             other => panic!("expected assign statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_attribute_transition_as_a_dedicated_statement() {
+        let file = parse("scene main { Washes.intensity -> 100% over 2s; }").unwrap();
+        let Item::Scene(scene) = &file.items[0];
+        let Statement::Transition(transition) = &scene.body.statements[0] else {
+            panic!("expected transition statement");
+        };
+        assert_eq!(transition.target.name, "Washes");
+        assert_eq!(transition.attribute.name, "intensity");
+        assert!(matches!(
+            transition.value,
+            Expression::Literal(Literal::Intensity(100), _)
+        ));
+        assert!(matches!(
+            transition.duration,
+            Expression::Literal(Literal::Duration(2000), _)
+        ));
+    }
+
+    #[test]
+    fn malformed_transitions_report_syntax_errors_without_panicking() {
+        for source in [
+            "scene main { Washes.intensity -> 100%; }",
+            "scene main { Washes.intensity -> over 2s; }",
+            "scene main { Washes.intensity -> 100% 2s; }",
+            "scene main { Washes.intensity -> 100% over; }",
+        ] {
+            assert!(
+                parse(source).is_err(),
+                "source unexpectedly parsed: {source}"
+            );
         }
     }
 

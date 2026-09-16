@@ -50,4 +50,12 @@ pub enum Instruction {
         target: TargetId,
         attribute: Attribute,
     },
+
+    /// Pops `Duration` first, then an attribute-compatible target value,
+    /// and starts a non-blocking transition at the VM clock's current
+    /// timestamp. V1 supports `Intensity` only.
+    TransitionAttribute {
+        target: TargetId,
+        attribute: Attribute,
+    },
 }

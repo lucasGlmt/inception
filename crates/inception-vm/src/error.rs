@@ -79,4 +79,7 @@ pub enum VmErrorKind {
     /// caller's `LightingState` actually defined that target, since that
     /// wiring happens outside the module entirely.
     UnknownTarget(TargetId),
+    UnsupportedTransitionAttribute,
+    InvalidTransitionValue,
+    ClockOverflow,
 }

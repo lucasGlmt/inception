@@ -102,7 +102,12 @@ impl<'a> Lexer<'a> {
                 }
                 b'-' => {
                     self.advance();
-                    self.push(TokenKind::Minus, start);
+                    if self.peek() == Some(b'>') {
+                        self.advance();
+                        self.push(TokenKind::Arrow, start);
+                    } else {
+                        self.push(TokenKind::Minus, start);
+                    }
                 }
                 b'*' => {
                     self.advance();

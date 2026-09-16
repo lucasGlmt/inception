@@ -107,6 +107,12 @@ pub enum MirInstruction {
         target: lux_hir::TargetId,
         attribute: lux_typeck::Attribute,
     },
+    /// Pops `duration` first, then the target value, and starts a
+    /// non-blocking absolute-time transition.
+    TransitionAttribute {
+        target: lux_hir::TargetId,
+        attribute: lux_typeck::Attribute,
+    },
 }
 
 /// A color value, normalized to RGB. `lux-hir`'s `ColorLiteral` can still
