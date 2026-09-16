@@ -8,88 +8,13 @@ use inception_core::UniverseId;
 use inception_renderer::UniverseFrame;
 
 use crate::DmxOutput;
+use crate::transport::{DmxTransport, TransportError, classify_open_error, classify_write_error};
 
 const START_MESSAGE: u8 = 0x7e;
 const SEND_DMX_LABEL: u8 = 6;
 const END_MESSAGE: u8 = 0xe7;
 const DMX_PAYLOAD_LENGTH: usize = 513;
 const PACKET_LENGTH: usize = 518;
-
-#[derive(Debug)]
-pub enum TransportError {
-    DeviceNotFound {
-        path: PathBuf,
-    },
-    OpenFailed {
-        path: PathBuf,
-        source: serialport::Error,
-    },
-    PermissionDenied {
-        path: PathBuf,
-    },
-    WriteFailed(std::io::Error),
-    Timeout,
-    Disconnected,
-    CloseFailed(std::io::Error),
-    UnsupportedUniverse {
-        configured: UniverseId,
-        requested: UniverseId,
-    },
-}
-
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DeviceNotFound { path } => {
-                write!(formatter, "DMX device not found: {}", path.display())
-            }
-            Self::OpenFailed { path, source } => {
-                write!(
-                    formatter,
-                    "failed to open DMX device {}: {source}",
-                    path.display()
-                )
-            }
-            Self::PermissionDenied { path } => {
-                write!(
-                    formatter,
-                    "permission denied opening DMX device {}",
-                    path.display()
-                )
-            }
-            Self::WriteFailed(error) => write!(formatter, "DMX write failed: {error}"),
-            Self::Timeout => write!(formatter, "DMX write timed out"),
-            Self::Disconnected => write!(formatter, "DMX device disconnected"),
-            Self::CloseFailed(error) => write!(formatter, "failed to flush DMX device: {error}"),
-            Self::UnsupportedUniverse {
-                configured,
-                requested,
-            } => write!(
-                formatter,
-                "DMX device is configured for universe {}, not {}",
-                configured.0, requested.0
-            ),
-        }
-    }
-}
-
-impl std::error::Error for TransportError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::OpenFailed { source, .. } => Some(source),
-            Self::WriteFailed(source) | Self::CloseFailed(source) => Some(source),
-            _ => None,
-        }
-    }
-}
-
-pub trait DmxTransport {
-    fn write_packet(&mut self, packet: &[u8]) -> Result<(), TransportError>;
-
-    fn close(&mut self) -> Result<(), TransportError> {
-        Ok(())
-    }
-}
 
 pub struct SerialTransport {
     port: Box<dyn serialport::SerialPort>,
@@ -117,21 +42,7 @@ impl SerialTransport {
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
             .open()
-            .map_err(|source| {
-                if matches!(
-                    source.kind(),
-                    serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied)
-                ) {
-                    TransportError::PermissionDenied {
-                        path: path.to_path_buf(),
-                    }
-                } else {
-                    TransportError::OpenFailed {
-                        path: path.to_path_buf(),
-                        source,
-                    }
-                }
-            })?;
+            .map_err(|source| classify_open_error(path, source))?;
         Ok(Self { port })
     }
 }
@@ -143,18 +54,6 @@ impl DmxTransport for SerialTransport {
 
     fn close(&mut self) -> Result<(), TransportError> {
         self.port.flush().map_err(TransportError::CloseFailed)
-    }
-}
-
-fn classify_write_error(error: std::io::Error) -> TransportError {
-    match error.kind() {
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => TransportError::Timeout,
-        std::io::ErrorKind::BrokenPipe
-        | std::io::ErrorKind::ConnectionAborted
-        | std::io::ErrorKind::ConnectionReset
-        | std::io::ErrorKind::NotConnected
-        | std::io::ErrorKind::UnexpectedEof => TransportError::Disconnected,
-        _ => TransportError::WriteFailed(error),
     }
 }
 

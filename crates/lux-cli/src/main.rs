@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use inception_core::{Clock, MonotonicClock, UniverseId};
 use inception_driver_dmx::{
-    DmxOutput, EnttecDmxUsbProConfig, NullDmxOutput, RealDmxOutput, RecordingDmxOutput,
+    DmxOutput, EnttecDmxUsbProConfig, NullDmxOutput, OpenDmxConfig, RealDmxOutput,
+    RealOpenDmxOutput, RecordingDmxOutput, TransportError,
 };
 use inception_renderer::UniverseFrame;
 use inception_runtime::{LoadedProgram, RuntimeConfig, RuntimeHost, RuntimeLoop, StdSleeper};
@@ -59,7 +60,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "Lux\n\nUSAGE:\n    lux build\n    lux check [--watch]\n    lux dev [--output null|recording|dmx]\n    lux new <path>"
+    "Lux\n\nUSAGE:\n    lux build\n    lux check [--watch]\n    lux dev [--output null|recording|dmx|open-dmx]\n    lux new <path>"
 }
 
 fn current_manifest() -> Result<PathBuf, Box<dyn Error>> {
@@ -365,11 +366,10 @@ fn print_project_error(error: &ProjectError) {
     }
 }
 
-#[derive(Debug)]
 enum CliOutput {
     Null(NullDmxOutput),
     Recording(RecordingDmxOutput),
-    Real(Box<RealDmxOutput>),
+    Real(Box<dyn DmxOutput<Error = TransportError>>),
 }
 
 #[derive(Debug)]
@@ -425,7 +425,21 @@ fn open_output(built: &BuiltProject, driver: &str) -> Result<CliOutput, Box<dyn 
                 built.project.paths.root.join(device),
                 UniverseId(configured.universe),
             );
-            Ok(CliOutput::Real(Box::new(RealDmxOutput::open(config)?)))
+            let output: RealDmxOutput = RealDmxOutput::open(config)?;
+            Ok(CliOutput::Real(Box::new(output)))
+        }
+        "open-dmx" => {
+            let configured = &built.project.manifest.output;
+            let device = configured
+                .device
+                .as_ref()
+                .ok_or("output.device is required for the real DMX driver")?;
+            let config = OpenDmxConfig::new(
+                built.project.paths.root.join(device),
+                UniverseId(configured.universe),
+            );
+            let output: RealOpenDmxOutput = RealOpenDmxOutput::open(config)?;
+            Ok(CliOutput::Real(Box::new(output)))
         }
         unknown => Err(format!("unknown output driver `{unknown}`").into()),
     }

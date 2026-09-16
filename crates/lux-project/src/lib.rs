@@ -310,15 +310,17 @@ fn validate_manifest(manifest: &ProjectManifest) -> Result<(), ProjectError> {
     }
     if !matches!(
         manifest.output.driver.as_str(),
-        "null" | "recording" | "dev" | "dmx" | "enttec"
+        "null" | "recording" | "dev" | "dmx" | "enttec" | "open-dmx"
     ) {
         errors.push(format!(
             "unknown output driver `{}`",
             manifest.output.driver
         ));
     }
-    if matches!(manifest.output.driver.as_str(), "dmx" | "enttec")
-        && manifest.output.device.is_none()
+    if matches!(
+        manifest.output.driver.as_str(),
+        "dmx" | "enttec" | "open-dmx"
+    ) && manifest.output.device.is_none()
     {
         errors.push("output.device is required for the real DMX driver".into());
     }

@@ -76,7 +76,8 @@ with:
 
 - `NullDmxOutput` for headless execution and benchmarks;
 - `RecordingDmxOutput` for deterministic tests;
-- `RealDmxOutput` for an ENTTEC DMX USB Pro serial interface.
+- `RealDmxOutput` for an ENTTEC DMX USB Pro serial interface;
+- `RealOpenDmxOutput` for a raw Open DMX USB serial interface.
 
 Universe IDs are collected once from the resolved rig and sorted ascending.
 No `HashMap` iteration order can affect physical send order.
@@ -99,6 +100,41 @@ Hardware selection belongs to the caller (eventually the CLI): instantiate
 `RuntimeEngine<NullDmxOutput>` for virtual mode or
 `RuntimeEngine<RealDmxOutput>` for the serial device. The runtime core contains
 no hardware branch.
+
+## Open DMX USB driver
+
+An Open DMX USB widget has no onboard microcontroller to frame packets: the
+host itself must generate the DMX512 line signal — a break, a Mark After
+Break (MAB), then a start code plus up to 512 channel slots at 250,000 baud.
+
+`OpenDmxTransport` drives this over the serial port's break-signal control
+(`set_break`/`clear_break`), with 110us break / 16us MAB sleeps around it —
+both above the DMX512-A minimums of 92us/12us. These values, and the rest of
+the serial handling below, mirror a field-tested implementation known to
+work on this same class of widget (FTDI FT232R-based Open DMX USB adapters):
+
+- **RTS is explicitly deasserted at open** (`write_request_to_send(false)`),
+  along with clearing any asserted break and flushing stale buffers
+  (`ClearBuffer::All`). Many Open DMX widgets tie their RS-485
+  driver-enable pin to the FTDI chip's RTS line; leaving it at whatever the
+  OS driver defaults to can intermittently gate transmission, which reads
+  as random flicker with every timing value otherwise correct.
+- **Draining after a frame polls `bytes_to_write`, never `tcdrain`/`flush`.**
+  Two earlier attempts at this driver — one generating the break via a
+  baud-rate switch, one generating it via `set_break` but draining with
+  `flush` — both wedged the port after exactly one frame: `tcdrain` never
+  reliably reported completion here and blocked until the port's read/write
+  timeout, starving every subsequent write. `bytes_to_write` instead reads
+  the OS software queue depth (non-blocking, effectively `TIOCOUTQ`); once
+  it reports empty, a fixed sleep sized from the frame's own wire time
+  (513 slots * 11 bits / 250,000 baud ≈ 22.6ms) covers the gap between
+  "queued" and "actually on the wire".
+
+It shares the `DmxTransport`/`TransportError` vocabulary with the ENTTEC
+driver so both fail the same structured way.
+
+Configured with `driver = "open-dmx"` in `lux.toml`, alongside the same
+`device`/`universe` fields as the `dmx`/`enttec` driver.
 
 ## Manual hardware smoke test
 
