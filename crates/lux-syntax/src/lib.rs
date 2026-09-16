@@ -1,14 +1,18 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Lexer, parser and AST for the Lux lighting language.
+//!
+//! This crate is purely syntactic: it turns source text into an AST and
+//! reports lexical/syntactic diagnostics. It has no notion of types,
+//! scopes or symbol resolution — that's `lux-hir` and `lux-typeck`'s job
+//! — and no runtime dependencies.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod ast;
+pub mod error;
+pub mod lexer;
+pub mod parser;
+pub mod span;
+pub mod token;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use ast::SourceFile;
+pub use error::SyntaxError;
+pub use parser::parse;
+pub use span::{Span, Spanned};

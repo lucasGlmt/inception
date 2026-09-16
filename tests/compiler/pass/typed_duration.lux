@@ -1,0 +1,4 @@
+scene main {
+    let duration: Duration = 1s;
+    wait duration;
+}

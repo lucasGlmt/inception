@@ -1,0 +1,186 @@
+//! Abstract syntax tree.
+//!
+//! Every node that matters for diagnostics or lowering carries a [`Span`].
+//! Unit-suffixed literals are normalized to a single canonical internal
+//! unit at parse time (milliseconds for durations, degrees for angles,
+//! hertz for frequency, BPM for tempo, whole percent for intensity) so
+//! later stages never need to re-derive them from raw source text. Range
+//! checks (e.g. intensity `0..=100`) are deliberately *not* enforced here;
+//! that's `lux-typeck`'s job, per the workspace's layering rules.
+//!
+//! This AST intentionally only contains what the current language surface
+//! needs. Future constructs (`Target.intensity = 50%;`, transitions,
+//! `run scene;`) are not pre-declared here: `Statement` and `Expression`
+//! are plain enums, so adding a new variant later is a local, additive
+//! change rather than something that needs to be designed in now.
+
+use crate::span::Span;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identifier {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceFile {
+    pub items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    Scene(SceneDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneDecl {
+    pub name: Identifier,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block {
+    pub statements: Vec<Statement>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Statement {
+    Let(LetStatement),
+    Wait(WaitStatement),
+    Expression(ExpressionStatement),
+}
+
+impl Statement {
+    pub fn span(&self) -> Span {
+        match self {
+            Statement::Let(s) => s.span,
+            Statement::Wait(s) => s.span,
+            Statement::Expression(s) => s.span,
+        }
+    }
+}
+
+/// A type name written in source (e.g. `Duration` in `let x: Duration = ...`).
+///
+/// Kept as raw text + span rather than a resolved type: `lux-syntax` has no
+/// notion of which type names are valid, that's decided during type
+/// checking so the set of builtin types lives in exactly one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeName {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LetStatement {
+    pub is_mut: bool,
+    pub name: Identifier,
+    pub type_annotation: Option<TypeName>,
+    pub value: Expression,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaitStatement {
+    pub value: Expression,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpressionStatement {
+    pub expr: Expression,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expression {
+    Literal(Literal, Span),
+    Identifier(Identifier),
+    Unary(UnaryExpr),
+    Binary(BinaryExpr),
+    Call(CallExpr),
+    Grouped(Box<Expression>, Span),
+}
+
+impl Expression {
+    pub fn span(&self) -> Span {
+        match self {
+            Expression::Literal(_, span) => *span,
+            Expression::Identifier(id) => id.span,
+            Expression::Unary(e) => e.span,
+            Expression::Binary(e) => e.span,
+            Expression::Call(e) => e.span,
+            Expression::Grouped(_, span) => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorName {
+    Red,
+    Blue,
+    Green,
+    White,
+    Black,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorLiteral {
+    Named(ColorName),
+    Hex(u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Literal {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    /// Canonicalized to whole milliseconds.
+    Duration(i64),
+    /// Whole percent; may be out of `0..=100`, checked by `lux-typeck`.
+    Intensity(i64),
+    /// Canonicalized to whole degrees.
+    Angle(i64),
+    /// Canonicalized to whole hertz.
+    Frequency(i64),
+    /// Canonicalized to whole beats per minute.
+    Tempo(i64),
+    Color(ColorLiteral),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Neg,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnaryExpr {
+    pub op: UnaryOp,
+    pub operand: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryExpr {
+    pub op: BinaryOp,
+    pub lhs: Box<Expression>,
+    pub rhs: Box<Expression>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallExpr {
+    pub callee: Identifier,
+    pub args: Vec<Expression>,
+    pub span: Span,
+}

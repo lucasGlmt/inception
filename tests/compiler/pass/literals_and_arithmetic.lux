@@ -1,0 +1,12 @@
+scene intro {
+    let mut intensity: Intensity = 50%;
+    let angle: Angle = 45deg;
+    let frequency: Frequency = 10hz;
+    let tempo: Tempo = 128bpm;
+    let color: Color = #ff0088;
+    let named_color: Color = red;
+    let count = 1 + 2 * 3;
+    let grouped = (1 + 2) * 3;
+    let combined_duration = 1s + 500ms;
+    wait combined_duration;
+}

@@ -1,0 +1,621 @@
+//! Hand-written recursive-descent parser with precedence climbing for
+//! binary expressions.
+//!
+//! ## Error recovery
+//!
+//! The parser never panics and never gets stuck. Every `parse_*` method
+//! that builds a required node (a statement, an expression, an
+//! identifier) always returns *something*: on malformed input it records
+//! a [`SyntaxError`] and substitutes a placeholder node (e.g. an empty
+//! identifier, an `Int(0)` literal) so the caller can keep building the
+//! tree. `lux-syntax::parse` still reports `Err` whenever any error was
+//! recorded, regardless of whether a full tree was produced — the
+//! placeholder tree exists only so a single malformed construct doesn't
+//! prevent later, unrelated errors in the same file from being reported.
+//!
+//! Statement and item loops additionally guard against zero-progress
+//! steps (a `parse_*` call that fails without consuming a token) by
+//! force-advancing one token, which guarantees termination on any input.
+
+use crate::ast::*;
+use crate::error::SyntaxError;
+use crate::lexer::tokenize;
+use crate::span::Span;
+use crate::token::{Token, TokenKind, Unit};
+
+/// Parses a full Lux source file. On success returns the AST; on failure
+/// returns every diagnostic collected while lexing and parsing (there may
+/// be more than one).
+pub fn parse(source: &str) -> Result<SourceFile, Vec<SyntaxError>> {
+    let (tokens, lex_errors) = tokenize(source);
+    let mut parser = Parser::new(tokens);
+    let file = parser.parse_source_file();
+
+    let mut errors = lex_errors;
+    errors.extend(parser.errors);
+
+    if errors.is_empty() {
+        Ok(file)
+    } else {
+        Err(errors)
+    }
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+    errors: Vec<SyntaxError>,
+}
+
+impl Parser {
+    fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    fn peek(&self) -> &Token {
+        // `tokenize` always terminates the stream with `Eof`, and `advance`
+        // never steps past it, so this index is always in bounds.
+        &self.tokens[self.pos]
+    }
+
+    fn peek_kind(&self) -> &TokenKind {
+        &self.peek().kind
+    }
+
+    fn at_eof(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::Eof)
+    }
+
+    fn advance(&mut self) -> Token {
+        let tok = self.peek().clone();
+        if !self.at_eof() {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn check(&self, kind: TokenKind) -> bool {
+        self.peek_kind() == &kind
+    }
+
+    fn error(&mut self, message: impl Into<String>, span: Span) {
+        self.errors.push(SyntaxError::new(message, span));
+    }
+
+    fn expect(&mut self, kind: TokenKind, context: &str) -> Option<Token> {
+        if self.check(kind) {
+            Some(self.advance())
+        } else {
+            let tok = self.peek().clone();
+            self.error(
+                format!("{context}, found {}", tok.kind.describe()),
+                tok.span,
+            );
+            None
+        }
+    }
+
+    fn expect_identifier(&mut self, context: &str) -> Identifier {
+        if let TokenKind::Ident(_) = self.peek_kind() {
+            let tok = self.advance();
+            let TokenKind::Ident(name) = tok.kind else {
+                unreachable!()
+            };
+            Identifier {
+                name,
+                span: tok.span,
+            }
+        } else {
+            let tok = self.peek().clone();
+            self.error(
+                format!("expected {context}, found {}", tok.kind.describe()),
+                tok.span,
+            );
+            Identifier {
+                name: String::new(),
+                span: Span::at(tok.span.start),
+            }
+        }
+    }
+
+    fn expect_type_name(&mut self) -> TypeName {
+        if let TokenKind::Ident(_) = self.peek_kind() {
+            let tok = self.advance();
+            let TokenKind::Ident(name) = tok.kind else {
+                unreachable!()
+            };
+            TypeName {
+                name,
+                span: tok.span,
+            }
+        } else {
+            let tok = self.peek().clone();
+            self.error(
+                format!("expected type name, found {}", tok.kind.describe()),
+                tok.span,
+            );
+            TypeName {
+                name: String::new(),
+                span: Span::at(tok.span.start),
+            }
+        }
+    }
+
+    fn parse_source_file(&mut self) -> SourceFile {
+        let mut items = Vec::new();
+        while !self.at_eof() {
+            let start_pos = self.pos;
+            if let Some(item) = self.parse_item() {
+                items.push(item);
+            }
+            if self.pos == start_pos {
+                self.advance();
+            }
+        }
+        SourceFile { items }
+    }
+
+    fn parse_item(&mut self) -> Option<Item> {
+        if self.check(TokenKind::Scene) {
+            Some(Item::Scene(self.parse_scene_decl()))
+        } else {
+            let tok = self.peek().clone();
+            self.error(
+                format!("expected `scene`, found {}", tok.kind.describe()),
+                tok.span,
+            );
+            None
+        }
+    }
+
+    fn parse_scene_decl(&mut self) -> SceneDecl {
+        let scene_tok = self.advance(); // `scene`
+        let name = self.expect_identifier("expected scene name");
+        let body = self.parse_block();
+        let span = Span::new(scene_tok.span.start, body.span.end);
+        SceneDecl { name, body, span }
+    }
+
+    fn parse_block(&mut self) -> Block {
+        let open = self.expect(TokenKind::LBrace, "expected `{` to start block");
+        let start = open
+            .as_ref()
+            .map(|t| t.span.start)
+            .unwrap_or(self.peek().span.start);
+
+        let mut statements = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.at_eof() {
+            let start_pos = self.pos;
+            statements.push(self.parse_statement());
+            if self.pos == start_pos {
+                self.advance();
+            }
+        }
+
+        let close = self.expect(TokenKind::RBrace, "expected `}` to close block");
+        let end = close.map(|t| t.span.end).unwrap_or(self.peek().span.end);
+        Block {
+            statements,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_statement(&mut self) -> Statement {
+        match self.peek_kind() {
+            TokenKind::Let => Statement::Let(self.parse_let_statement()),
+            TokenKind::Wait => Statement::Wait(self.parse_wait_statement()),
+            _ => Statement::Expression(self.parse_expression_statement()),
+        }
+    }
+
+    fn parse_let_statement(&mut self) -> LetStatement {
+        let let_tok = self.advance(); // `let`
+        let is_mut = if self.check(TokenKind::Mut) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let name = self.expect_identifier("expected variable name");
+        let type_annotation = if self.check(TokenKind::Colon) {
+            self.advance();
+            Some(self.expect_type_name())
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq, "expected `=` in `let` statement");
+        let value = self.parse_expression();
+        let semi = self.expect(TokenKind::Semicolon, "expected `;` after `let` statement");
+        let end = semi.map(|t| t.span.end).unwrap_or(value.span().end);
+        LetStatement {
+            is_mut,
+            name,
+            type_annotation,
+            value,
+            span: Span::new(let_tok.span.start, end),
+        }
+    }
+
+    fn parse_wait_statement(&mut self) -> WaitStatement {
+        let wait_tok = self.advance(); // `wait`
+        let value = self.parse_expression();
+        let semi = self.expect(TokenKind::Semicolon, "expected `;` after `wait` statement");
+        let end = semi.map(|t| t.span.end).unwrap_or(value.span().end);
+        WaitStatement {
+            value,
+            span: Span::new(wait_tok.span.start, end),
+        }
+    }
+
+    fn parse_expression_statement(&mut self) -> ExpressionStatement {
+        let expr = self.parse_expression();
+        let semi = self.expect(TokenKind::Semicolon, "expected `;` after expression");
+        let end = semi.map(|t| t.span.end).unwrap_or(expr.span().end);
+        let span = Span::new(expr.span().start, end);
+        ExpressionStatement { expr, span }
+    }
+
+    fn parse_expression(&mut self) -> Expression {
+        self.parse_binary_expression(0)
+    }
+
+    fn binding_power(op: BinaryOp) -> u8 {
+        match op {
+            BinaryOp::Add | BinaryOp::Sub => 1,
+            BinaryOp::Mul | BinaryOp::Div => 2,
+        }
+    }
+
+    fn parse_binary_expression(&mut self, min_bp: u8) -> Expression {
+        let mut lhs = self.parse_unary_expression();
+
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Plus => BinaryOp::Add,
+                TokenKind::Minus => BinaryOp::Sub,
+                TokenKind::Star => BinaryOp::Mul,
+                TokenKind::Slash => BinaryOp::Div,
+                _ => break,
+            };
+            let bp = Self::binding_power(op);
+            if bp < min_bp {
+                break;
+            }
+            self.advance();
+            let rhs = self.parse_binary_expression(bp + 1);
+            let span = lhs.span().to(rhs.span());
+            lhs = Expression::Binary(BinaryExpr {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            });
+        }
+
+        lhs
+    }
+
+    fn parse_unary_expression(&mut self) -> Expression {
+        if self.check(TokenKind::Minus) {
+            let minus = self.advance();
+            let operand = self.parse_unary_expression();
+            let span = minus.span.to(operand.span());
+            Expression::Unary(UnaryExpr {
+                op: UnaryOp::Neg,
+                operand: Box::new(operand),
+                span,
+            })
+        } else {
+            self.parse_primary_expression()
+        }
+    }
+
+    fn parse_primary_expression(&mut self) -> Expression {
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::Int(v) => {
+                self.advance();
+                Expression::Literal(Literal::Int(v), tok.span)
+            }
+            TokenKind::Float(v) => {
+                self.advance();
+                Expression::Literal(Literal::Float(v), tok.span)
+            }
+            TokenKind::UnitValue(v, unit) => {
+                self.advance();
+                let lit = match unit {
+                    Unit::Milliseconds => Literal::Duration(v),
+                    Unit::Seconds => Literal::Duration(v * 1000),
+                    Unit::Percent => Literal::Intensity(v),
+                    Unit::Degrees => Literal::Angle(v),
+                    Unit::Hertz => Literal::Frequency(v),
+                    Unit::Bpm => Literal::Tempo(v),
+                };
+                Expression::Literal(lit, tok.span)
+            }
+            TokenKind::HexColor(r, g, b) => {
+                self.advance();
+                Expression::Literal(Literal::Color(ColorLiteral::Hex(r, g, b)), tok.span)
+            }
+            TokenKind::True => {
+                self.advance();
+                Expression::Literal(Literal::Bool(true), tok.span)
+            }
+            TokenKind::False => {
+                self.advance();
+                Expression::Literal(Literal::Bool(false), tok.span)
+            }
+            TokenKind::Red => {
+                self.advance();
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Named(ColorName::Red)),
+                    tok.span,
+                )
+            }
+            TokenKind::Blue => {
+                self.advance();
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Named(ColorName::Blue)),
+                    tok.span,
+                )
+            }
+            TokenKind::Green => {
+                self.advance();
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Named(ColorName::Green)),
+                    tok.span,
+                )
+            }
+            TokenKind::White => {
+                self.advance();
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Named(ColorName::White)),
+                    tok.span,
+                )
+            }
+            TokenKind::Black => {
+                self.advance();
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Named(ColorName::Black)),
+                    tok.span,
+                )
+            }
+            TokenKind::Ident(name) => {
+                self.advance();
+                let id = Identifier {
+                    name,
+                    span: tok.span,
+                };
+                if self.check(TokenKind::LParen) {
+                    self.parse_call(id)
+                } else {
+                    Expression::Identifier(id)
+                }
+            }
+            TokenKind::LParen => {
+                self.advance();
+                let inner = self.parse_expression();
+                let close = self.expect(
+                    TokenKind::RParen,
+                    "expected `)` to close grouped expression",
+                );
+                let end = close.map(|t| t.span.end).unwrap_or(inner.span().end);
+                Expression::Grouped(Box::new(inner), Span::new(tok.span.start, end))
+            }
+            _ => {
+                self.error(
+                    format!("expected expression, found {}", tok.kind.describe()),
+                    tok.span,
+                );
+                Expression::Literal(Literal::Int(0), Span::at(tok.span.start))
+            }
+        }
+    }
+
+    fn parse_call(&mut self, callee: Identifier) -> Expression {
+        let lparen = self.advance(); // `(`
+        let mut args = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                args.push(self.parse_expression());
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RParen, "expected `)` after call arguments");
+        let end = close
+            .map(|t| t.span.end)
+            .unwrap_or_else(|| args.last().map(|a| a.span().end).unwrap_or(lparen.span.end));
+        let span = Span::new(callee.span.start, end);
+        Expression::Call(CallExpr { callee, args, span })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_scene() {
+        let src = "scene main {\n    wait 1s;\n}\n";
+        let file = parse(src).expect("should parse");
+        assert_eq!(file.items.len(), 1);
+        let Item::Scene(scene) = &file.items[0];
+        assert_eq!(scene.name.name, "main");
+        assert_eq!(scene.body.statements.len(), 1);
+        assert!(matches!(scene.body.statements[0], Statement::Wait(_)));
+    }
+
+    #[test]
+    fn parses_typed_let_and_wait_reference() {
+        let src = r#"
+            scene main {
+                let duration: Duration = 500ms;
+                wait duration;
+            }
+        "#;
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        assert_eq!(scene.body.statements.len(), 2);
+        match &scene.body.statements[0] {
+            Statement::Let(let_stmt) => {
+                assert!(!let_stmt.is_mut);
+                assert_eq!(let_stmt.name.name, "duration");
+                assert_eq!(let_stmt.type_annotation.as_ref().unwrap().name, "Duration");
+                assert_eq!(
+                    let_stmt.value,
+                    Expression::Literal(Literal::Duration(500), let_stmt.value.span())
+                );
+            }
+            other => panic!("expected let statement, got {other:?}"),
+        }
+        match &scene.body.statements[1] {
+            Statement::Wait(wait_stmt) => {
+                assert!(
+                    matches!(&wait_stmt.value, Expression::Identifier(id) if id.name == "duration")
+                );
+            }
+            other => panic!("expected wait statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mut_and_literals() {
+        let src = r#"
+            scene main {
+                let mut intensity: Intensity = 50%;
+                let color = #ff0088;
+            }
+        "#;
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        match &scene.body.statements[0] {
+            Statement::Let(let_stmt) => assert!(let_stmt.is_mut),
+            other => panic!("expected let statement, got {other:?}"),
+        }
+        match &scene.body.statements[1] {
+            Statement::Let(let_stmt) => assert_eq!(
+                let_stmt.value,
+                Expression::Literal(
+                    Literal::Color(ColorLiteral::Hex(0xff, 0x00, 0x88)),
+                    let_stmt.value.span()
+                )
+            ),
+            other => panic!("expected let statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn respects_arithmetic_precedence() {
+        let src = "scene main { let x = 1 + 2 * 3; }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        match &let_stmt.value {
+            Expression::Binary(bin) => {
+                assert_eq!(bin.op, BinaryOp::Add);
+                assert!(matches!(*bin.lhs, Expression::Literal(Literal::Int(1), _)));
+                match &*bin.rhs {
+                    Expression::Binary(inner) => assert_eq!(inner.op, BinaryOp::Mul),
+                    other => panic!("expected nested multiplication, got {other:?}"),
+                }
+            }
+            other => panic!("expected binary expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_parenthesized_expression() {
+        let src = "scene main { let x = (1 + 2) * 3; }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Binary(bin) = &let_stmt.value else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(bin.op, BinaryOp::Mul);
+        assert!(matches!(*bin.lhs, Expression::Grouped(_, _)));
+    }
+
+    #[test]
+    fn parses_function_calls() {
+        let src = "scene main { blackout(); foo(1, 2); }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0];
+        assert_eq!(scene.body.statements.len(), 2);
+        match &scene.body.statements[1] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expr {
+                Expression::Call(call) => {
+                    assert_eq!(call.callee.name, "foo");
+                    assert_eq!(call.args.len(), 2);
+                }
+                other => panic!("expected call, got {other:?}"),
+            },
+            other => panic!("expected expression statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_scene_name_is_an_error() {
+        let result = parse("scene { }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn wait_without_expression_is_an_error() {
+        let result = parse("scene main { wait; }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn let_without_value_is_an_error() {
+        let result = parse("scene main { let x = ; }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn missing_semicolon_is_an_error() {
+        let result = parse("scene main { wait 1s }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parser_never_panics_on_garbage() {
+        let inputs = [
+            "",
+            "scene",
+            "scene main",
+            "scene main {",
+            "}",
+            "let let let",
+            "scene main { let = = = ; }",
+            "scene main { wait 1 + ; }",
+            "@#$%",
+            "scene main { foo(1, ; }",
+        ];
+        for input in inputs {
+            let _ = parse(input); // must not panic
+        }
+    }
+
+    #[test]
+    fn reports_multiple_errors_when_possible() {
+        let src = "scene main { wait; let x = ; }";
+        let errors = parse(src).expect_err("should have errors");
+        assert!(
+            errors.len() >= 2,
+            "expected at least 2 errors, got {errors:?}"
+        );
+    }
+}

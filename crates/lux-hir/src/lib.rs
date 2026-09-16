@@ -1,14 +1,19 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! High-level IR (HIR) for Lux: the AST after name resolution.
+//!
+//! Depends only on `lux-syntax` (for the AST and spans). Has no notion of
+//! types — that's `lux-typeck` — and no dependency on it, keeping the
+//! dependency direction downward as required by the workspace layering
+//! rules.
+
+pub mod error;
+pub mod hir;
+pub mod ids;
+pub mod resolve;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::HirError;
+pub use hir::*;
+pub use ids::{LocalId, SceneId};
+pub use resolve::lower;

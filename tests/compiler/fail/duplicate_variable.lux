@@ -1,0 +1,4 @@
+scene main {
+    let x = 1s;
+    let x = 2s;
+}
