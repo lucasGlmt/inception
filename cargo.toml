@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+
+members = [
+    "crates/lux-syntax",
+    "crates/lux-hir",
+    "crates/lux-typeck",
+    "crates/lux-mir",
+    "crates/lux-bytecode",
+    "crates/lux-compiler",
+
+    "crates/inception-core",
+    "crates/inception-vm",
+    "crates/inception-renderer",
+    "crates/inception-linker",
+    "crates/inception-runtime",
+
+    "crates/inception-driver-dmx",
+    "crates/inception-driver-launchpad",
+
+    "crates/lux-cli",
+    "crates/lux-lsp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/TON_USER/inception"
+rust-version = "1.85"
+
+[workspace.dependencies]
+lux-syntax = { path = "crates/lux-syntax" }
+lux-hir = { path = "crates/lux-hir" }
+lux-typeck = { path = "crates/lux-typeck" }
+lux-mir = { path = "crates/lux-mir" }
+lux-bytecode = { path = "crates/lux-bytecode" }
+lux-compiler = { path = "crates/lux-compiler" }
+
+inception-core = { path = "crates/inception-core" }
+inception-vm = { path = "crates/inception-vm" }
+inception-renderer = { path = "crates/inception-renderer" }
+inception-linker = { path = "crates/inception-linker" }
+inception-runtime = { path = "crates/inception-runtime" }
+
+inception-driver-dmx = { path = "crates/inception-driver-dmx" }
+inception-driver-launchpad = { path = "crates/inception-driver-launchpad" }
