@@ -76,6 +76,10 @@ pub enum TokenKind {
     Mut,
     Wait,
     Over,
+    Rig,
+    Contract,
+    Role,
+    Group,
 
     // Punctuation
     LBrace,
@@ -92,6 +96,8 @@ pub enum TokenKind {
     Star,
     Slash,
     Eq,
+    Less,
+    Greater,
 
     Eof,
 }
@@ -118,6 +124,10 @@ impl TokenKind {
             TokenKind::Mut => "`mut`".to_string(),
             TokenKind::Wait => "`wait`".to_string(),
             TokenKind::Over => "`over`".to_string(),
+            TokenKind::Rig => "`rig`".to_string(),
+            TokenKind::Contract => "`contract`".to_string(),
+            TokenKind::Role => "`role`".to_string(),
+            TokenKind::Group => "`Group`".to_string(),
             TokenKind::LBrace => "`{`".to_string(),
             TokenKind::RBrace => "`}`".to_string(),
             TokenKind::LParen => "`(`".to_string(),
@@ -132,6 +142,8 @@ impl TokenKind {
             TokenKind::Star => "`*`".to_string(),
             TokenKind::Slash => "`/`".to_string(),
             TokenKind::Eq => "`=`".to_string(),
+            TokenKind::Less => "`<`".to_string(),
+            TokenKind::Greater => "`>`".to_string(),
             TokenKind::Eof => "end of file".to_string(),
         }
     }
@@ -157,6 +169,10 @@ pub fn keyword(ident: &str) -> Option<TokenKind> {
         "mut" => TokenKind::Mut,
         "wait" => TokenKind::Wait,
         "over" => TokenKind::Over,
+        "rig" => TokenKind::Rig,
+        "contract" => TokenKind::Contract,
+        "role" => TokenKind::Role,
+        "Group" => TokenKind::Group,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "red" => TokenKind::Red,

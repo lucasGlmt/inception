@@ -23,6 +23,7 @@ fn module_with(constants: Vec<Constant>, functions: Vec<Function>) -> BytecodeMo
         functions,
         entry: Some(FunctionId(0)),
         target_count: 0,
+        rig_contract: None,
     }
 }
 

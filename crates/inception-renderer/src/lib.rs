@@ -3,7 +3,7 @@
 //! ```text
 //! LightingState (inception-core)
 //!       +
-//! ResolvedRig (already physically resolved — no linker yet)
+//! ResolvedRig (already physically resolved by inception-linker)
 //!       ↓
 //!   render()
 //!       ↓

@@ -11,11 +11,67 @@
 use lux_syntax::Span;
 use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
-use crate::ids::{LocalId, SceneId, TargetId};
+use crate::ids::{LocalId, RoleId, SceneId, TargetId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirFile {
     pub scenes: Vec<HirScene>,
+    pub rig_contract: Option<HirRigContract>,
+    pub target_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirRigContract {
+    pub name: String,
+    pub roles: Vec<HirRole>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirRole {
+    pub id: RoleId,
+    pub target: TargetId,
+    pub name: String,
+    pub capabilities: CapabilitySet,
+    pub cardinality: RoleCardinality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleCardinality {
+    GroupNonEmpty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Capability {
+    Intensity,
+    Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CapabilitySet(u8);
+
+impl CapabilitySet {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub fn insert(&mut self, capability: Capability) {
+        self.0 |= match capability {
+            Capability::Intensity => 1,
+            Capability::Color => 2,
+        };
+    }
+
+    pub const fn contains(self, capability: Capability) -> bool {
+        let bit = match capability {
+            Capability::Intensity => 1,
+            Capability::Color => 2,
+        };
+        self.0 & bit != 0
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

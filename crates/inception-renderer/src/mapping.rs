@@ -1,14 +1,9 @@
 //! The resolved physical mapping: which DMX channel(s) a fixture's
 //! attributes land on.
 //!
-//! This is deliberately hand-buildable (in tests, or by whoever wires up
-//! the renderer today) — there is no fixture definition language or
-//! patch parser yet (see `AGENTS.md`'s "hors scope"). A future
-//! `inception-linker` producing a [`ResolvedRig`] is meant to be a
-//! drop-in replacement for however one gets built today; the renderer
-//! itself never parses, resolves names, or validates for DMX address
-//! collisions (that's the linker's job, per item 26 of the task brief) —
-//! it only reads an already-resolved mapping.
+//! Produced by `inception-linker` from validated fixture definitions and a
+//! physical patch. The renderer itself never parses, resolves names, or
+//! validates DMX address collisions; it only reads this numeric mapping.
 
 use inception_core::{FixtureId, UniverseId};
 

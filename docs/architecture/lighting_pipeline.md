@@ -1,8 +1,8 @@
 # Lighting pipeline (V1)
 
-The first end-to-end lighting pipeline: a Lux program can assign a
-semantic attribute and produce concrete DMX bytes, with no hardware and
-no fixture DSL/linker yet. This is a summary — the authoritative
+The end-to-end lighting pipeline: a portable Lux program can assign a
+semantic role attribute and produce concrete DMX bytes after linking to a
+physical patch, with no hardware. This is a summary — the authoritative
 documentation lives as rustdoc on `inception_core::lighting_state`,
 `inception_renderer` (crate-level docs), and `inception_driver_dmx`.
 
@@ -33,19 +33,16 @@ that was never set reads back as `Intensity::ZERO`/`Rgb::BLACK` — an
 explicit default, not an "uninitialized" state.
 
 `set_target_attribute` expands a `TargetId` to every `FixtureId` its
-`ResolvedTarget` names (declared once via `define_target`) and applies
-the value to each. There is no rig/patch/linker yet: `ResolvedTarget`s
-are built by hand (in tests, or wherever a caller sets one up), the same
-temporary arrangement `lux_hir::TargetEnvironment` uses on the compiler
-side for target *names* — see that type's docs.
+linked `ResolvedTarget` names and applies the value to each. Runtime targets
+are produced by `inception-linker`, not resolved from names during execution.
 
 ## Resolved physical mapping
 
 `inception_renderer::ResolvedRig` is a `Vec<ResolvedFixture>`, each
 mapping a fixture's `intensity`/`color` to a `DmxChannelMapping` /
 `RgbChannelMapping` (a `UniverseId` plus one or three `DmxChannel`s).
-Also hand-built for now — `inception-linker` is meant to produce this
-later without the renderer's API needing to change. The renderer never
+`inception-linker` produces this structure from fixture definitions and the
+validated patch. The renderer never
 parses, resolves names, or validates for DMX address collisions (that's
 the linker's job); it only reads an already-resolved mapping.
 

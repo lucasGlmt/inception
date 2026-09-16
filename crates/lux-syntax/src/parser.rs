@@ -172,13 +172,70 @@ impl Parser {
     fn parse_item(&mut self) -> Option<Item> {
         if self.check(TokenKind::Scene) {
             Some(Item::Scene(self.parse_scene_decl()))
+        } else if self.check(TokenKind::Rig) {
+            Some(Item::RigContract(self.parse_rig_contract_decl()))
         } else {
             let tok = self.peek().clone();
             self.error(
-                format!("expected `scene`, found {}", tok.kind.describe()),
+                format!("expected `scene` or `rig`, found {}", tok.kind.describe()),
                 tok.span,
             );
             None
+        }
+    }
+
+    fn parse_rig_contract_decl(&mut self) -> RigContractDecl {
+        let rig = self.advance();
+        self.expect(TokenKind::Contract, "expected `contract` after `rig`");
+        let name = self.expect_identifier("expected rig contract name");
+        self.expect(TokenKind::LBrace, "expected `{` to start rig contract");
+        let mut roles = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.at_eof() {
+            let start_pos = self.pos;
+            roles.push(self.parse_role_decl());
+            if self.pos == start_pos {
+                self.advance();
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "expected `}` to close rig contract");
+        let end = close
+            .map(|token| token.span.end)
+            .unwrap_or(self.peek().span.end);
+        RigContractDecl {
+            name,
+            roles,
+            span: Span::new(rig.span.start, end),
+        }
+    }
+
+    fn parse_role_decl(&mut self) -> RoleDecl {
+        let role = self.expect(TokenKind::Role, "expected `role` in rig contract");
+        let start = role
+            .as_ref()
+            .map(|token| token.span.start)
+            .unwrap_or(self.peek().span.start);
+        let name = self.expect_identifier("expected role name");
+        self.expect(TokenKind::Colon, "expected `:` after role name");
+        self.expect(TokenKind::Group, "expected `Group` role type");
+        self.expect(TokenKind::Less, "expected `<` after `Group`");
+        let mut capabilities = Vec::new();
+        loop {
+            capabilities.push(self.expect_identifier("expected capability name"));
+            if self.check(TokenKind::Plus) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::Greater, "expected `>` after role capabilities");
+        let semi = self.expect(TokenKind::Semicolon, "expected `;` after role declaration");
+        let end = semi
+            .map(|token| token.span.end)
+            .unwrap_or(self.peek().span.start);
+        RoleDecl {
+            name,
+            capabilities,
+            span: Span::new(start, end),
         }
     }
 
@@ -497,7 +554,9 @@ mod tests {
         let src = "scene main {\n    wait 1s;\n}\n";
         let file = parse(src).expect("should parse");
         assert_eq!(file.items.len(), 1);
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         assert_eq!(scene.name.name, "main");
         assert_eq!(scene.body.statements.len(), 1);
         assert!(matches!(scene.body.statements[0], Statement::Wait(_)));
@@ -512,7 +571,9 @@ mod tests {
             }
         "#;
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         assert_eq!(scene.body.statements.len(), 2);
         match &scene.body.statements[0] {
             Statement::Let(let_stmt) => {
@@ -545,7 +606,9 @@ mod tests {
             }
         "#;
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         match &scene.body.statements[0] {
             Statement::Let(let_stmt) => assert!(let_stmt.is_mut),
             other => panic!("expected let statement, got {other:?}"),
@@ -566,7 +629,9 @@ mod tests {
     fn respects_arithmetic_precedence() {
         let src = "scene main { let x = 1 + 2 * 3; }";
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         let Statement::Let(let_stmt) = &scene.body.statements[0] else {
             panic!("expected let statement");
         };
@@ -587,7 +652,9 @@ mod tests {
     fn parses_parenthesized_expression() {
         let src = "scene main { let x = (1 + 2) * 3; }";
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         let Statement::Let(let_stmt) = &scene.body.statements[0] else {
             panic!("expected let statement");
         };
@@ -602,7 +669,9 @@ mod tests {
     fn parses_function_calls() {
         let src = "scene main { blackout(); foo(1, 2); }";
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         assert_eq!(scene.body.statements.len(), 2);
         match &scene.body.statements[1] {
             Statement::Expression(expr_stmt) => match &expr_stmt.expr {
@@ -620,7 +689,9 @@ mod tests {
     fn parses_attribute_assignment() {
         let src = "scene main { Washes.intensity = 50%; }";
         let file = parse(src).expect("should parse");
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         assert_eq!(scene.body.statements.len(), 1);
         match &scene.body.statements[0] {
             Statement::Assign(assign) => {
@@ -638,7 +709,9 @@ mod tests {
     #[test]
     fn parses_attribute_transition_as_a_dedicated_statement() {
         let file = parse("scene main { Washes.intensity -> 100% over 2s; }").unwrap();
-        let Item::Scene(scene) = &file.items[0];
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
         let Statement::Transition(transition) = &scene.body.statements[0] else {
             panic!("expected transition statement");
         };
@@ -652,6 +725,27 @@ mod tests {
             transition.duration,
             Expression::Literal(Literal::Duration(2000), _)
         ));
+    }
+
+    #[test]
+    fn parses_rig_contract_with_typed_group_role() {
+        let file =
+            parse("rig contract DemoRig { role Washes: Group<Color + Intensity>; } scene main {}")
+                .unwrap();
+        let Item::RigContract(contract) = &file.items[0] else {
+            panic!("expected rig contract");
+        };
+        assert_eq!(contract.name.name, "DemoRig");
+        assert_eq!(contract.roles.len(), 1);
+        assert_eq!(contract.roles[0].name.name, "Washes");
+        assert_eq!(
+            contract.roles[0]
+                .capabilities
+                .iter()
+                .map(|capability| capability.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Color", "Intensity"]
+        );
     }
 
     #[test]

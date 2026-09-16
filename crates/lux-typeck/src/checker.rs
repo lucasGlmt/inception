@@ -39,7 +39,16 @@ use crate::types::Type;
 /// (not just the first) when checking fails anywhere in the file; on
 /// success, returns every local's resolved type.
 pub fn check(hir: &HirFile) -> Result<TypedProgram, Vec<TypeError>> {
-    let mut checker = Checker { errors: Vec::new() };
+    let role_capabilities = hir
+        .rig_contract
+        .iter()
+        .flat_map(|contract| &contract.roles)
+        .map(|role| (role.target, role.capabilities))
+        .collect();
+    let mut checker = Checker {
+        errors: Vec::new(),
+        role_capabilities,
+    };
 
     let scene_locals: Vec<HashMap<LocalId, Type>> = hir
         .scenes
@@ -77,6 +86,7 @@ pub fn check(hir: &HirFile) -> Result<TypedProgram, Vec<TypeError>> {
 
 struct Checker {
     errors: Vec<TypeError>,
+    role_capabilities: HashMap<lux_hir::TargetId, lux_hir::CapabilitySet>,
 }
 
 impl Checker {
@@ -122,6 +132,7 @@ impl Checker {
             ));
             return;
         };
+        self.check_role_capability(transition.target, attribute, transition.attribute_span);
 
         if attribute != Attribute::Intensity {
             self.errors.push(
@@ -157,6 +168,26 @@ impl Checker {
         }
     }
 
+    fn check_role_capability(
+        &mut self,
+        target: lux_hir::TargetId,
+        attribute: Attribute,
+        span: Span,
+    ) {
+        let required = match attribute {
+            Attribute::Intensity => lux_hir::Capability::Intensity,
+            Attribute::Color => lux_hir::Capability::Color,
+        };
+        if let Some(capabilities) = self.role_capabilities.get(&target)
+            && !capabilities.contains(required)
+        {
+            self.errors.push(TypeError::new(
+                format!("role does not provide required capability `{required:?}`"),
+                span,
+            ));
+        }
+    }
+
     fn check_assign(&mut self, local_types: &HashMap<LocalId, Type>, assign: &HirAssign) {
         let inferred = self.infer(local_types, &assign.value);
 
@@ -167,6 +198,7 @@ impl Checker {
             ));
             return;
         };
+        self.check_role_capability(assign.target, attribute, assign.attribute_span);
 
         let expected = attribute.value_type();
         if let Some(inferred_ty) = inferred

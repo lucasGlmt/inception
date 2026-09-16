@@ -29,6 +29,8 @@ pub enum VerificationErrorKind {
     InvalidLocalId(LocalId),
     /// A `SetAttribute` `TargetId` is `>= module.target_count`.
     InvalidTargetId(TargetId),
+    InvalidRoleId(crate::RoleId),
+    InvalidRoleTarget(TargetId),
     /// V1 only defines interpolation for intensity.
     UnsupportedTransitionAttribute(crate::Attribute),
     /// Popped a value from an empty operand stack.
@@ -119,6 +121,21 @@ pub fn verify(module: &BytecodeModule) -> Result<(), Vec<VerificationError>> {
         errors.push(VerificationError::module(
             VerificationErrorKind::InvalidEntry(entry),
         ));
+    }
+
+    if let Some(contract) = &module.rig_contract {
+        for (index, role) in contract.roles.iter().enumerate() {
+            if role.id != crate::RoleId(index as u32) {
+                errors.push(VerificationError::module(
+                    VerificationErrorKind::InvalidRoleId(role.id),
+                ));
+            }
+            if role.target.0 >= module.target_count {
+                errors.push(VerificationError::module(
+                    VerificationErrorKind::InvalidRoleTarget(role.target),
+                ));
+            }
+        }
     }
 
     for function in &module.functions {

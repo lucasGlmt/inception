@@ -33,7 +33,7 @@ const ENTRY_SCENE_NAME: &str = "main";
 /// was passed to `lux_hir::lower` for this same `hir`. It flows straight
 /// through to `MirModule::target_count` and, from there, to
 /// `lux_bytecode::BytecodeModule::target_count`.
-pub fn lower(hir: &HirFile, typed: &TypedProgram, target_count: u32) -> MirModule {
+pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
     let mut functions = Vec::with_capacity(hir.scenes.len());
     let mut entry = None;
 
@@ -48,7 +48,24 @@ pub fn lower(hir: &HirFile, typed: &TypedProgram, target_count: u32) -> MirModul
     MirModule {
         functions,
         entry,
-        target_count,
+        target_count: hir.target_count,
+        rig_contract: hir
+            .rig_contract
+            .as_ref()
+            .map(|contract| crate::mir::MirRigContract {
+                name: contract.name.clone(),
+                roles: contract
+                    .roles
+                    .iter()
+                    .map(|role| crate::mir::MirRole {
+                        id: role.id,
+                        target: role.target,
+                        name: role.name.clone(),
+                        capabilities: role.capabilities,
+                        cardinality: role.cardinality,
+                    })
+                    .collect(),
+            }),
     }
 }
 

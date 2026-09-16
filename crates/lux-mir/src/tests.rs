@@ -12,7 +12,7 @@ fn lower_source_with_targets(source: &str, targets: &TargetEnvironment) -> crate
     let ast = lux_syntax::parse(source).expect("should parse");
     let hir = lux_hir::lower(&ast, targets).expect("should resolve");
     let typed = lux_typeck::check(&hir).expect("should type check");
-    lower(&hir, &typed, targets.len() as u32)
+    lower(&hir, &typed)
 }
 
 #[test]

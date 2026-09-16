@@ -12,6 +12,7 @@ fn empty_module() -> BytecodeModule {
         functions: Vec::new(),
         entry: None,
         target_count: 0,
+        rig_contract: None,
     }
 }
 

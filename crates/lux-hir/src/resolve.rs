@@ -29,10 +29,11 @@ use lux_syntax::ast::{self, Expression, Item, SourceFile, Statement};
 use crate::environment::TargetEnvironment;
 use crate::error::HirError;
 use crate::hir::{
-    HirAssign, HirExpr, HirExprStatement, HirFile, HirLet, HirScene, HirStatement, HirTransition,
-    HirWait, LocalDecl, TypeAnnotation,
+    Capability, CapabilitySet, HirAssign, HirExpr, HirExprStatement, HirFile, HirLet,
+    HirRigContract, HirRole, HirScene, HirStatement, HirTransition, HirWait, LocalDecl,
+    RoleCardinality, TypeAnnotation,
 };
-use crate::ids::{LocalId, SceneId};
+use crate::ids::{LocalId, RoleId, SceneId};
 
 /// Lowers a parsed source file into HIR, resolving every name reference —
 /// both local variables and, per `targets`, lighting target names (see
@@ -41,15 +42,20 @@ use crate::ids::{LocalId, SceneId};
 /// diagnostic collected (never just the first) when resolution fails
 /// anywhere in the file.
 pub fn lower(ast: &SourceFile, targets: &TargetEnvironment) -> Result<HirFile, Vec<HirError>> {
+    let mut resolved_targets = targets.clone();
+    let mut pre_errors = Vec::new();
+    let rig_contract = lower_rig_contract(ast, &mut resolved_targets, &mut pre_errors);
     let mut lowering = Lowering {
-        errors: Vec::new(),
-        targets,
+        errors: pre_errors,
+        targets: &resolved_targets,
     };
     let mut scenes = Vec::new();
     let mut scene_names: HashMap<String, Span> = HashMap::new();
 
-    for (index, item) in ast.items.iter().enumerate() {
-        let Item::Scene(decl) = item;
+    for item in &ast.items {
+        let Item::Scene(decl) = item else {
+            continue;
+        };
 
         if let Some(&first_span) = scene_names.get(&decl.name.name) {
             lowering.errors.push(
@@ -64,14 +70,81 @@ pub fn lower(ast: &SourceFile, targets: &TargetEnvironment) -> Result<HirFile, V
             scene_names.insert(decl.name.name.clone(), decl.name.span);
         }
 
-        scenes.push(lowering.lower_scene(SceneId(index as u32), decl));
+        scenes.push(lowering.lower_scene(SceneId(scenes.len() as u32), decl));
     }
 
     if lowering.errors.is_empty() {
-        Ok(HirFile { scenes })
+        Ok(HirFile {
+            scenes,
+            rig_contract,
+            target_count: resolved_targets.len() as u32,
+        })
     } else {
         Err(lowering.errors)
     }
+}
+
+fn lower_rig_contract(
+    ast: &SourceFile,
+    targets: &mut TargetEnvironment,
+    errors: &mut Vec<HirError>,
+) -> Option<HirRigContract> {
+    let contracts: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::RigContract(contract) => Some(contract),
+            Item::Scene(_) => None,
+        })
+        .collect();
+    if contracts.len() > 1 {
+        for contract in &contracts[1..] {
+            errors.push(HirError::new(
+                "only one rig contract is allowed per Lux program",
+                contract.span,
+            ));
+        }
+    }
+    let contract = contracts.first()?;
+    let mut names = HashMap::new();
+    let mut roles = Vec::new();
+    for declaration in &contract.roles {
+        if let Some(first_span) = names.insert(declaration.name.name.clone(), declaration.name.span)
+        {
+            errors.push(
+                HirError::new(
+                    format!("role `{}` is already defined", declaration.name.name),
+                    declaration.name.span,
+                )
+                .with_secondary_span(first_span),
+            );
+            continue;
+        }
+        let mut capabilities = CapabilitySet::empty();
+        for capability in &declaration.capabilities {
+            match capability.name.as_str() {
+                "Intensity" => capabilities.insert(Capability::Intensity),
+                "Color" => capabilities.insert(Capability::Color),
+                _ => errors.push(HirError::new(
+                    format!("unknown capability `{}`", capability.name),
+                    capability.span,
+                )),
+            }
+        }
+        let id = RoleId(roles.len() as u32);
+        let target = targets.insert(declaration.name.name.clone());
+        roles.push(HirRole {
+            id,
+            target,
+            name: declaration.name.name.clone(),
+            capabilities,
+            cardinality: RoleCardinality::GroupNonEmpty,
+        });
+    }
+    Some(HirRigContract {
+        name: contract.name.name.clone(),
+        roles,
+    })
 }
 
 /// A flat, scene-local namespace mapping variable names to their

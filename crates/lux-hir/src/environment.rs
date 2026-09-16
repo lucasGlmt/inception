@@ -1,16 +1,8 @@
-//! The temporary stand-in for a rig/patch/linker.
+//! Target-name environment used during HIR resolution.
 //!
-//! This milestone has no fixture definition language, patch parser or
-//! linker yet (see `AGENTS.md`'s "hors scope"): a real Lux program's
-//! `Washes.intensity = 50%;` will eventually resolve `Washes` against a
-//! rig produced by `inception-linker`. Until that exists, whoever drives
-//! the compiler (a test, or `lux-compiler`'s caller) supplies a
-//! [`TargetEnvironment`] mapping target names to [`TargetId`]s directly —
-//! this is explicitly a placeholder, not a permanent design: nothing here
-//! is hardcoded into the compiler itself (see item 13 of this
-//! milestone's task brief), so swapping it for real target resolution
-//! later only touches whoever constructs one, not `lux-hir`'s resolution
-//! logic.
+//! Portable compilation populates this deterministically from `rig contract`
+//! roles. The public structure remains available for legacy/compiler unit tests
+//! that exercise isolated target resolution without a contract.
 
 use crate::ids::TargetId;
 

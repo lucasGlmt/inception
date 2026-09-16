@@ -31,6 +31,22 @@ pub struct MirModule {
     /// `TargetEnvironment` `lower` was given — copied straight through to
     /// `lux_bytecode::BytecodeModule::target_count` by codegen.
     pub target_count: u32,
+    pub rig_contract: Option<MirRigContract>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirRigContract {
+    pub name: String,
+    pub roles: Vec<MirRole>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirRole {
+    pub id: lux_hir::RoleId,
+    pub target: lux_hir::TargetId,
+    pub name: String,
+    pub capabilities: lux_hir::CapabilitySet,
+    pub cardinality: lux_hir::RoleCardinality,
 }
 
 #[derive(Debug, Clone, PartialEq)]

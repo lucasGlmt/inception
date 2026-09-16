@@ -11,6 +11,7 @@ pub mod disasm;
 pub mod ids;
 pub mod instruction;
 pub mod module;
+pub mod role;
 pub mod value;
 pub mod verify;
 
@@ -22,5 +23,8 @@ pub use disasm::disassemble;
 pub use ids::{ConstantId, FunctionId, LocalId, TargetId};
 pub use instruction::Instruction;
 pub use module::{BytecodeModule, BytecodeVersion, Function};
+pub use role::{
+    Capability, CapabilitySet, PortableRigContract, PortableRole, RoleCardinality, RoleId,
+};
 pub use value::{ColorValue, Constant, ValueType};
 pub use verify::{VerificationError, VerificationErrorKind, verify};

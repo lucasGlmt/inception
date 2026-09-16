@@ -121,6 +121,14 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     self.push(TokenKind::Eq, start);
                 }
+                b'<' => {
+                    self.advance();
+                    self.push(TokenKind::Less, start);
+                }
+                b'>' => {
+                    self.advance();
+                    self.push(TokenKind::Greater, start);
+                }
                 b'#' => self.lex_hex_color(start),
                 b'0'..=b'9' => self.lex_number(start),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident(start),

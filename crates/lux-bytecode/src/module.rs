@@ -1,6 +1,7 @@
 //! The bytecode module format: the top-level structure a compiler
 //! produces and a verifier/VM consumes.
 
+use crate::PortableRigContract;
 use crate::ids::FunctionId;
 use crate::instruction::Instruction;
 use crate::value::{Constant, ValueType};
@@ -27,11 +28,12 @@ pub struct BytecodeModule {
     pub entry: Option<FunctionId>,
     /// How many distinct lighting targets `SetAttribute` instructions in
     /// this module may reference: valid `TargetId`s are `0..target_count`.
-    /// There's no `Vec<Target>` here — a target is nothing but a
-    /// resolved-elsewhere set of fixtures (see `AGENTS.md`'s "hors
-    /// scope": no rig/patch/linker in this milestone), so a bare count is
-    /// all the verifier needs to bounds-check references against.
+    /// Targets are resolved to fixture ID lists by `inception-linker`, so a
+    /// bare count is all portable bytecode and its verifier require.
     pub target_count: u32,
+    /// Portable semantic role requirements. Names are link-time/debug
+    /// metadata and are never consulted by the VM.
+    pub rig_contract: Option<PortableRigContract>,
 }
 
 /// A single function's compiled code.

@@ -30,6 +30,21 @@ pub struct SourceFile {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Scene(SceneDecl),
+    RigContract(RigContractDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RigContractDecl {
+    pub name: Identifier,
+    pub roles: Vec<RoleDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoleDecl {
+    pub name: Identifier,
+    pub capabilities: Vec<Identifier>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,10 +85,8 @@ impl Statement {
 /// e.g. `Washes.intensity = 50%;`.
 ///
 /// Both `target` and `attribute` are kept as raw names, not resolved
-/// here: which target names exist depends on an externally supplied
-/// compile-time environment (see `lux_hir::TargetEnvironment` — there is
-/// deliberately no rig/patch/linker in this milestone), and which
-/// attribute names are valid is `lux-typeck`'s call, exactly like
+/// here: role names are resolved from the rig contract during HIR lowering,
+/// while attribute validity is `lux-typeck`'s responsibility, exactly like
 /// `LetStatement::type_annotation`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssignStatement {

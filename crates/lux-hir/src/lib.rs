@@ -17,5 +17,5 @@ mod tests;
 pub use environment::TargetEnvironment;
 pub use error::HirError;
 pub use hir::*;
-pub use ids::{LocalId, SceneId, TargetId};
+pub use ids::{LocalId, RoleId, SceneId, TargetId};
 pub use resolve::lower;

@@ -24,6 +24,14 @@ version = "0.1.0"
 [[package]]
 name = "inception-linker"
 version = "0.1.0"
+dependencies = [
+ "inception-core",
+ "inception-driver-dmx",
+ "inception-renderer",
+ "inception-vm",
+ "lux-bytecode",
+ "lux-compiler",
+]
 
 [[package]]
 name = "inception-renderer"
@@ -35,6 +43,14 @@ dependencies = [
 [[package]]
 name = "inception-runtime"
 version = "0.1.0"
+dependencies = [
+ "inception-core",
+ "inception-driver-dmx",
+ "inception-linker",
+ "inception-renderer",
+ "inception-vm",
+ "lux-compiler",
+]
 
 [[package]]
 name = "inception-vm"

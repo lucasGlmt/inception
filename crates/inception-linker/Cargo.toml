@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+inception-core.workspace = true
+inception-renderer.workspace = true
+lux-bytecode.workspace = true
+
+[dev-dependencies]
+inception-driver-dmx.workspace = true
+inception-vm.workspace = true
+lux-compiler.workspace = true

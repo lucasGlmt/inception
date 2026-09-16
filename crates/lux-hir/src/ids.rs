@@ -18,3 +18,6 @@ pub struct LocalId(pub u32);
 /// of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TargetId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RoleId(pub u32);

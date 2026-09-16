@@ -17,10 +17,8 @@ use crate::ids::{FixtureId, TargetId};
 use crate::intensity::Intensity;
 
 /// A target already resolved to the fixtures it addresses. This
-/// milestone builds these by hand (in tests, or wherever a caller sets
-/// up its `LightingState`) — there is no rig/patch/linker yet to produce
-/// them; see `lux_hir::TargetEnvironment`'s docs for the compile-time
-/// half of this same temporary arrangement.
+/// `inception-linker` produces these as part of a venue-specific
+/// `RuntimeImage`; lower-level unit tests may still construct them directly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResolvedTarget {
     pub fixtures: Vec<FixtureId>,
@@ -55,8 +53,7 @@ impl LightingState {
     }
 
     /// Declares what a target resolves to. Called once during setup (by
-    /// a test today; by a future linker eventually) — not part of the
-    /// per-frame "apply a command" path.
+    /// `RuntimeImage` setup) — not part of the per-frame command path.
     pub fn define_target(&mut self, id: TargetId, target: ResolvedTarget) {
         self.targets.insert(id, target);
     }

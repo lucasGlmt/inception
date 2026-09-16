@@ -344,3 +344,21 @@ fn color_transition_is_explicitly_out_of_scope_for_v1() {
             .any(|e| e.message.contains("not supported yet"))
     );
 }
+
+#[test]
+fn role_rejects_attribute_not_declared_by_its_contract() {
+    let errors = check_source(
+        r#"
+        rig contract DemoRig {
+            role Dimmers: Group<Intensity>;
+        }
+        scene main { Dimmers.color = red; }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("role does not provide required capability `Color`")
+    }));
+}

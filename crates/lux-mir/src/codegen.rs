@@ -44,6 +44,28 @@ pub fn lower_to_bytecode(module: &MirModule) -> BytecodeModule {
         functions,
         entry: module.entry.map(to_bytecode_function_id),
         target_count: module.target_count,
+        rig_contract: module.rig_contract.as_ref().map(|contract| {
+            lux_bytecode::PortableRigContract {
+                name: contract.name.clone(),
+                roles: contract
+                    .roles
+                    .iter()
+                    .map(|role| lux_bytecode::PortableRole {
+                        id: lux_bytecode::RoleId(role.id.0),
+                        target: to_bytecode_target_id(role.target),
+                        name: role.name.clone(),
+                        required_capabilities: lux_bytecode::CapabilitySet::from_bits(
+                            role.capabilities.bits(),
+                        ),
+                        cardinality: match role.cardinality {
+                            lux_hir::RoleCardinality::GroupNonEmpty => {
+                                lux_bytecode::RoleCardinality::GroupNonEmpty
+                            }
+                        },
+                    })
+                    .collect(),
+            }
+        }),
     }
 }
 
