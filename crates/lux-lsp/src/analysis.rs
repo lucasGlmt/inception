@@ -365,6 +365,9 @@ impl AnalysisSnapshot {
         {
             return expected_attribute_from_lhs(lhs);
         }
+        if let Some((lhs, _)) = statement.rsplit_once("<-") {
+            return expected_signal_binding_from_lhs(lhs);
+        }
         if let Some((lhs, _)) = statement.rsplit_once('=') {
             if let Some(expected) = expected_attribute_from_lhs(lhs) {
                 return Some(expected);
@@ -534,7 +537,9 @@ impl AnalysisSnapshot {
                 let ty = binding
                     .type_annotation
                     .as_ref()
-                    .and_then(|annotation| Type::from_name(&annotation.name))
+                    .and_then(|annotation| {
+                        lux_typeck::resolve_annotation(&lux_hir::lower_type_name(annotation)).ok()
+                    })
                     .or_else(|| expression_type(&binding.value));
                 result.push(LocalInfo {
                     name: binding.name.name.clone(),
@@ -745,6 +750,9 @@ impl AnalysisSnapshot {
                         {
                             spans.push(transition.target.span)
                         }
+                        Statement::BindSignal(bind) if role && bind.target.name == word => {
+                            spans.push(bind.target.span)
+                        }
                         _ => {}
                     }
                     if !role && !scene {
@@ -887,6 +895,10 @@ impl AnalysisSnapshot {
                             Statement::Transition(transition) => {
                                 push(transition.target.span, 0);
                                 push(transition.attribute.span, 4);
+                            }
+                            Statement::BindSignal(bind) => {
+                                push(bind.target.span, 0);
+                                push(bind.attribute.span, 4);
                             }
                             _ => {}
                         }
@@ -1163,6 +1175,11 @@ fn param_type_name(ty: lux_stdlib::ParamType) -> &'static str {
         lux_stdlib::ParamType::Angle => "Angle",
         lux_stdlib::ParamType::Intensity => "Intensity",
         lux_stdlib::ParamType::Color => "Color",
+        lux_stdlib::ParamType::SignalInt => "Signal<Int>",
+        lux_stdlib::ParamType::SignalFloat => "Signal<Float>",
+        lux_stdlib::ParamType::SignalAngle => "Signal<Angle>",
+        lux_stdlib::ParamType::SignalIntensity => "Signal<Intensity>",
+        lux_stdlib::ParamType::SignalColor => "Signal<Color>",
         lux_stdlib::ParamType::Unsupported => "?",
     }
 }
@@ -1235,6 +1252,10 @@ fn expected_attribute_from_lhs(lhs: &str) -> Option<ExpectedType> {
     ExpectedType::for_attribute(lhs.trim().rsplit_once('.')?.1.trim())
 }
 
+fn expected_signal_binding_from_lhs(lhs: &str) -> Option<ExpectedType> {
+    ExpectedType::for_signal_binding(lhs.trim().rsplit_once('.')?.1.trim())
+}
+
 fn valid_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars
@@ -1276,6 +1297,7 @@ fn visit_statement_expressions(statement: &Statement, visitor: &mut impl FnMut(&
             visit_expression(&transition.value, visitor);
             visit_expression(&transition.duration, visitor);
         }
+        Statement::BindSignal(bind) => visit_expression(&bind.signal, visitor),
     }
 }
 
@@ -1352,6 +1374,108 @@ mod tests {
     }
 
     #[test]
+    fn expected_type_after_left_arrow_is_the_attribute_wrapped_in_signal() {
+        let (analysis, position) = snapshot(
+            "import std.Signal; rig contract Demo { role Washes: Group<Intensity>; } scene main { Washes.intensity <- $0 }",
+        );
+        assert_eq!(
+            analysis.expected_type(analysis.document.map.offset(analysis.source(), position)),
+            Some(ExpectedType::exact(Type::Signal(
+                lux_typeck::SignalElement::Intensity
+            )))
+        );
+    }
+
+    #[test]
+    fn expected_type_after_left_arrow_follows_the_attribute_element_type() {
+        let (analysis, position) = snapshot(
+            "import std.Signal; rig contract Demo { role Washes: Group<Color>; } scene main { Washes.color <- $0 }",
+        );
+        assert_eq!(
+            analysis.expected_type(analysis.document.map.offset(analysis.source(), position)),
+            Some(ExpectedType::exact(Type::Signal(
+                lux_typeck::SignalElement::Color
+            )))
+        );
+    }
+
+    /// Item 10: with two locals of different `Signal<T>` types in scope,
+    /// completion after `<-` must rank the one matching the attribute
+    /// first, not just alphabetically or in declaration order.
+    #[test]
+    fn signal_binding_completion_prefers_the_matching_signal_element_type() {
+        let (analysis, position) = snapshot(
+            "import std.Signal; rig contract Demo { role Washes: Group<Intensity>; } scene main { let a: Signal<Intensity> = Signal.constant(20%); let b: Signal<Color> = Signal.constant(red); Washes.intensity <- $0 }",
+        );
+        let items = analysis.complete(position);
+        let a = items.iter().find(|item| item.label == "a").unwrap();
+        let b = items.iter().find(|item| item.label == "b").unwrap();
+        assert_eq!(a.sort_text.as_deref(), Some("0-local"));
+        assert_ne!(b.sort_text.as_deref(), Some("0-local"));
+    }
+
+    /// Item 48: hovering a `let`-bound signal reports its full
+    /// `Signal<T>` type, not just its RHS call's element type — this only
+    /// works because `visible_locals` resolves the type *annotation*
+    /// (`Signal<Intensity>`) through `lux_typeck::resolve_annotation`
+    /// rather than the older `Type::from_name`, which can't represent
+    /// `Signal` at all.
+    #[test]
+    fn hover_on_a_signal_local_reports_its_full_signal_type() {
+        let source = "import std.Signal; rig contract Demo { role Washes: Group<Intensity>; } scene main { let level: Signal<Intensity> = Signal.constant(50%); Washes.intensity <- level; }";
+        let use_site = source.rfind("<- level").unwrap() + 3;
+        let marked = format!("{}$0{}", &source[..use_site], &source[use_site..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Signal<Intensity>"));
+    }
+
+    /// Item 49: a `<-` bound to a signal of the wrong element type must
+    /// be flagged immediately, purely from the in-memory overlay — no
+    /// save/reparse-from-disk round trip involved (this test never
+    /// touches the filesystem).
+    #[test]
+    fn signal_binding_wrong_element_type_is_diagnosed_without_save() {
+        let (analysis, _) = snapshot(
+            "import std.Signal; rig contract Demo { role Washes: Group<Intensity>; } scene main { let c = Signal.constant(red); Washes.intensity <- c; $0}",
+        );
+        let diagnostics = analysis.diagnostics();
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+            == "expected `Signal<Intensity>`, found `Signal<Color>`"));
+    }
+
+    #[test]
+    fn signal_binding_direct_value_is_diagnosed_without_save() {
+        let (analysis, _) = snapshot(
+            "rig contract Demo { role Washes: Group<Intensity>; } scene main { Washes.intensity <- 50%; $0}",
+        );
+        let diagnostics = analysis.diagnostics();
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.message
+                == "expected `Signal<Intensity>`, found `Intensity`")
+        );
+    }
+
+    /// Item 50: `Front.intensity <- Signal.` still proposes `constant`,
+    /// exactly like a plain `let x = Signal.$0` would — the qualified-call
+    /// completion path doesn't care what statement it's nested inside.
+    #[test]
+    fn signal_binding_inline_member_completion_still_offers_constant() {
+        let (analysis, position) = snapshot(
+            "import std.Signal; rig contract Demo { role Washes: Group<Intensity>; } scene main { Washes.intensity <- Signal.$0 }",
+        );
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(labels.contains(&"constant".to_string()));
+    }
+
+    #[test]
     fn incomplete_sources_never_panic() {
         for source in [
             "W",
@@ -1359,6 +1483,8 @@ mod tests {
             "Washes.intensity =",
             "Washes.intensity ->",
             "Washes.intensity -> 100% over",
+            "Washes.intensity <-",
+            "Washes.intensity <- sig",
             "scene",
             "scene main {",
         ] {
@@ -1462,7 +1588,7 @@ mod tests {
             .into_iter()
             .map(|item| item.label)
             .collect();
-        assert_eq!(labels, ["Math", "Color"]);
+        assert_eq!(labels, ["Math", "Color", "Signal"]);
     }
 
     #[test]
@@ -1485,6 +1611,17 @@ mod tests {
             .map(|item| item.label)
             .collect();
         assert_eq!(labels, ["sin", "cos", "abs", "min", "max", "clamp", "lerp"]);
+    }
+
+    #[test]
+    fn signal_module_member_completion_lists_constant() {
+        let (analysis, position) = snapshot("import std.Signal;\nscene main { let x = Signal.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["constant"]);
     }
 
     #[test]
@@ -1519,6 +1656,35 @@ mod tests {
             panic!("expected markup")
         };
         assert!(contents.value.contains("module Color"));
+    }
+
+    #[test]
+    fn hover_on_signal_constant_call_shows_its_signature() {
+        let source = "import std.Signal;\nscene main { let x = Signal.constant(50%); }";
+        let pos = source.find("constant").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        // `constant` is overloaded (one per element type); hover picks the
+        // first matching signature by name, same as it would for any
+        // other overloaded stdlib function.
+        assert!(
+            contents
+                .value
+                .contains("constant(value: Int) -> Signal<Int>")
+        );
+    }
+
+    #[test]
+    fn signature_help_on_signal_constant_lists_every_element_type_overload() {
+        let source = "import std.Signal;\nscene main { let x = Signal.constant(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 5);
     }
 
     #[test]

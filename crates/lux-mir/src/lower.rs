@@ -148,6 +148,20 @@ fn lower_statement(stmt: &HirStatement, local_types: &[Type], out: &mut Vec<MirI
                 attribute,
             });
         }
+        HirStatement::BindSignal(bind) => {
+            lower_expr(&bind.signal, local_types, out);
+            let attribute =
+                lux_typeck::Attribute::from_name(&bind.attribute_name).unwrap_or_else(|| {
+                    unreachable!(
+                        "lower: signal binding attribute `{}` should already be valid",
+                        bind.attribute_name
+                    )
+                });
+            out.push(MirInstruction::BindSignal {
+                target: bind.target,
+                attribute,
+            });
+        }
     }
 }
 

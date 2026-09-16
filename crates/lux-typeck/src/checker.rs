@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use lux_hir::{
-    HirAssign, HirCall, HirCallee, HirExpr, HirFile, HirLet, HirScene, HirStatement, HirTransition,
-    HirWait, LocalId,
+    HirAssign, HirBindSignal, HirCall, HirCallee, HirExpr, HirFile, HirLet, HirScene, HirStatement,
+    HirTransition, HirWait, LocalId,
 };
 use lux_stdlib::{IntrinsicId, OverloadError, Signature};
 use lux_syntax::Span;
@@ -36,7 +36,7 @@ use crate::error::TypeError;
 use crate::program::{TypedProgram, TypedScene};
 use crate::rules::{binary_op_symbol, binary_result_type, unary_result_type};
 use crate::stdlib_bridge::{from_param_type, to_param_type};
-use crate::types::Type;
+use crate::types::{SignalElement, Type, resolve_annotation};
 
 /// Type-checks every scene in `hir`. Returns every diagnostic collected
 /// (not just the first) when checking fails anywhere in the file; on
@@ -115,6 +115,7 @@ impl Checker {
             }
             HirStatement::Assign(assign) => self.check_assign(local_types, assign),
             HirStatement::Transition(transition) => self.check_transition(local_types, transition),
+            HirStatement::BindSignal(bind) => self.check_bind_signal(local_types, bind),
         }
     }
 
@@ -215,6 +216,38 @@ impl Checker {
         }
     }
 
+    fn check_bind_signal(&mut self, local_types: &HashMap<LocalId, Type>, bind: &HirBindSignal) {
+        let inferred = self.infer(local_types, &bind.signal);
+
+        let Some(attribute) = Attribute::from_name(&bind.attribute_name) else {
+            self.errors.push(TypeError::new(
+                format!("unknown attribute `{}`", bind.attribute_name),
+                bind.attribute_span,
+            ));
+            return;
+        };
+        self.check_role_capability(bind.target, attribute, bind.attribute_span);
+
+        // Every attribute's `value_type()` is one of the types `SignalElement`
+        // covers (see `SignalElement`'s docs), so this never fails.
+        let expected = Type::Signal(
+            SignalElement::from_type(attribute.value_type())
+                .expect("attribute value types are always valid signal elements"),
+        );
+        if let Some(inferred_ty) = inferred
+            && inferred_ty != expected
+        {
+            self.errors.push(
+                TypeError::new(
+                    format!("expected `{expected}`, found `{inferred_ty}`"),
+                    bind.signal.span(),
+                )
+                .with_secondary_span(bind.attribute_span)
+                .with_help(format!("`{attribute}` expects `{expected}`")),
+            );
+        }
+    }
+
     fn check_let(
         &mut self,
         scene: &HirScene,
@@ -227,12 +260,12 @@ impl Checker {
         let final_type = match &local.type_annotation {
             None => inferred,
             Some(annotation) => {
-                let Some(declared_ty) = Type::from_name(&annotation.name) else {
-                    self.errors.push(TypeError::new(
-                        format!("unknown type `{}`", annotation.name),
-                        annotation.span,
-                    ));
-                    return;
+                let declared_ty = match resolve_annotation(annotation) {
+                    Ok(ty) => ty,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return;
+                    }
                 };
                 if let Some(inferred_ty) = inferred
                     && declared_ty != inferred_ty

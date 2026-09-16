@@ -82,4 +82,10 @@ pub enum VmErrorKind {
     UnsupportedTransitionAttribute,
     InvalidTransitionValue,
     ClockOverflow,
+    /// `BIND_SIGNAL`'s operand referenced a `SignalId` this `Vm`'s
+    /// `SignalStore` doesn't know about — unreachable for a verified
+    /// module (every `Signal` value on the stack was produced by this
+    /// same `Vm`'s own `SignalConstant*` handling), kept only for the
+    /// same defensive reason every other `VmErrorKind` exists.
+    UnknownSignal(crate::signal::SignalId),
 }

@@ -9,14 +9,17 @@
 
 use lux_stdlib::ParamType;
 
-use crate::types::Type;
+use crate::types::{SignalElement, Type};
 
 /// Total: every `Type` maps to *some* `ParamType`. `Bool`/`Duration`/
 /// `Frequency`/`Tempo` have no stdlib representation, so they map to
 /// [`ParamType::Unsupported`] — a sentinel no real `Signature` parameter
 /// ever uses, guaranteeing such an argument can never accidentally match
 /// a real overload; it only ever produces a clean type-mismatch
-/// diagnostic (see `checker.rs::check_call`).
+/// diagnostic (see `checker.rs::check_call`). `Type::Signal(_)` maps the
+/// same way: no stdlib function accepts a `Signal` argument in V1 (only
+/// `Signal.constant`'s *return* type is a signal), so passing one as an
+/// argument anywhere should behave exactly like passing a `Bool`.
 pub fn to_param_type(ty: Type) -> ParamType {
     match ty {
         Type::Int => ParamType::Int,
@@ -24,7 +27,9 @@ pub fn to_param_type(ty: Type) -> ParamType {
         Type::Angle => ParamType::Angle,
         Type::Intensity => ParamType::Intensity,
         Type::Color => ParamType::Color,
-        Type::Bool | Type::Duration | Type::Frequency | Type::Tempo => ParamType::Unsupported,
+        Type::Bool | Type::Duration | Type::Frequency | Type::Tempo | Type::Signal(_) => {
+            ParamType::Unsupported
+        }
     }
 }
 
@@ -38,6 +43,11 @@ pub fn from_param_type(ty: ParamType) -> Type {
         ParamType::Angle => Type::Angle,
         ParamType::Intensity => Type::Intensity,
         ParamType::Color => Type::Color,
+        ParamType::SignalInt => Type::Signal(SignalElement::Int),
+        ParamType::SignalFloat => Type::Signal(SignalElement::Float),
+        ParamType::SignalAngle => Type::Signal(SignalElement::Angle),
+        ParamType::SignalIntensity => Type::Signal(SignalElement::Intensity),
+        ParamType::SignalColor => Type::Signal(SignalElement::Color),
         ParamType::Unsupported => unreachable!(
             "from_param_type: no stdlib signature returns `Unsupported` — \
              this would mean a `Signature::return_ty` was misconfigured"
@@ -60,6 +70,28 @@ mod tests {
         ] {
             assert_eq!(from_param_type(to_param_type(ty)), ty);
         }
+    }
+
+    #[test]
+    fn signal_return_types_round_trip() {
+        for (param, elem) in [
+            (ParamType::SignalInt, SignalElement::Int),
+            (ParamType::SignalFloat, SignalElement::Float),
+            (ParamType::SignalAngle, SignalElement::Angle),
+            (ParamType::SignalIntensity, SignalElement::Intensity),
+            (ParamType::SignalColor, SignalElement::Color),
+        ] {
+            assert_eq!(from_param_type(param), Type::Signal(elem));
+        }
+    }
+
+    #[test]
+    fn signal_type_as_an_argument_is_unsupported() {
+        // No stdlib function accepts a `Signal` parameter in V1.
+        assert_eq!(
+            to_param_type(Type::Signal(SignalElement::Intensity)),
+            ParamType::Unsupported
+        );
     }
 
     #[test]

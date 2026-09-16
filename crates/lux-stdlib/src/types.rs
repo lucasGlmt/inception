@@ -14,6 +14,19 @@ pub enum ParamType {
     Angle,
     Intensity,
     Color,
+    /// `Signal<T>` for each of the 5 `T`s above — only ever used as a
+    /// `Signature::return_ty` in V1 (`Signal.constant`'s return type),
+    /// never as a `Param::ty`: no stdlib function accepts a signal
+    /// argument yet. Kept as 5 flat variants rather than one
+    /// `Signal(Box<ParamType>)` payload, matching this registry's existing
+    /// "monomorphize overloads as separate variants" style (see
+    /// `MathAbsInt`/`MathAbsFloat` in `crate::intrinsic::IntrinsicId`)
+    /// rather than introducing real generics here.
+    SignalInt,
+    SignalFloat,
+    SignalAngle,
+    SignalIntensity,
+    SignalColor,
     /// Not a real stdlib parameter type — no `Signature` in this registry
     /// ever declares a parameter or return type of `Unsupported`. It
     /// exists purely as a total target for callers (namely

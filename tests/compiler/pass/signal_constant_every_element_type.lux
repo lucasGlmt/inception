@@ -1,0 +1,9 @@
+import std.Signal;
+
+scene main {
+    let a: Signal<Intensity> = Signal.constant(50%);
+    let b: Signal<Color> = Signal.constant(red);
+    let c: Signal<Float> = Signal.constant(1.5);
+    let d: Signal<Angle> = Signal.constant(90deg);
+    let e = Signal.constant(1);
+}

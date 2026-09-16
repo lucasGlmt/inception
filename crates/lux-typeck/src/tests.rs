@@ -505,3 +505,241 @@ fn color_mix_and_hsv_type_check() {
     );
     assert!(result.is_ok(), "unexpected errors: {result:?}");
 }
+
+#[test]
+fn signal_constant_infers_signal_of_argument_type() {
+    let typed = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let a = Signal.constant(50%);
+            let b = Signal.constant(red);
+            let c = Signal.constant(1.5);
+            let d = Signal.constant(90deg);
+        }
+        "#,
+    )
+    .expect("should type check");
+    assert_eq!(
+        typed.scenes[0].local_types,
+        vec![
+            Type::Signal(crate::types::SignalElement::Intensity),
+            Type::Signal(crate::types::SignalElement::Color),
+            Type::Signal(crate::types::SignalElement::Float),
+            Type::Signal(crate::types::SignalElement::Angle),
+        ]
+    );
+}
+
+#[test]
+fn signal_types_are_distinguished_by_element_type() {
+    assert_eq!(
+        Type::Signal(crate::types::SignalElement::Intensity),
+        Type::Signal(crate::types::SignalElement::Intensity)
+    );
+    assert_ne!(
+        Type::Signal(crate::types::SignalElement::Intensity),
+        Type::Signal(crate::types::SignalElement::Color)
+    );
+    assert_ne!(
+        Type::Signal(crate::types::SignalElement::Intensity),
+        Type::Intensity
+    );
+}
+
+#[test]
+fn signal_type_annotation_matches_inferred_value() {
+    let result = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let s: Signal<Intensity> = Signal.constant(50%);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn signal_type_annotation_mismatch_is_an_error() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let s: Signal<Color> = Signal.constant(50%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Color>`, found `Signal<Intensity>`")
+    }));
+}
+
+#[test]
+fn signal_value_does_not_implicitly_unwrap() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let x: Intensity = Signal.constant(50%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Intensity`, found `Signal<Intensity>`")
+    }));
+}
+
+#[test]
+fn plain_value_does_not_implicitly_wrap_into_a_signal() {
+    let errors = check_source("scene main { let s: Signal<Intensity> = 50%; }").unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Intensity`")
+    }));
+}
+
+#[test]
+fn nested_signal_annotation_is_rejected() {
+    let errors = check_source("scene main { let s: Signal<Signal<Intensity>> = 1; }").unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("Signal<Signal<...>>"))
+    );
+}
+
+#[test]
+fn signal_element_type_not_in_the_supported_set_is_rejected() {
+    let errors = check_source("scene main { let s: Signal<Bool> = 1; }").unwrap_err();
+    assert!(errors.iter().any(|e| e.message.contains("Signal<Bool>")));
+}
+
+#[test]
+fn non_generic_type_with_type_argument_is_rejected() {
+    let errors = check_source("scene main { let s: Intensity<Color> = 50%; }").unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("does not take type arguments"))
+    );
+}
+
+#[test]
+fn signal_as_stdlib_argument_is_not_a_matching_overload() {
+    let errors = check_source(
+        r#"
+        import std.Math;
+        import std.Signal;
+        scene main {
+            let s = Signal.constant(1.0);
+            let x = Math.abs(s);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(!errors.is_empty());
+}
+
+#[test]
+fn signal_binding_with_a_local_of_the_matching_signal_type_passes() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Signal;
+        scene main {
+            let level = Signal.constant(50%);
+            Washes.intensity <- level;
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn signal_binding_with_an_inline_constant_passes() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Signal;
+        scene main {
+            Washes.intensity <- Signal.constant(50%);
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn signal_binding_rejects_a_direct_value_with_no_implicit_wrap() {
+    let errors = check_source_with_targets(
+        "scene main { Washes.intensity <- 50%; }",
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Intensity`")
+    }));
+}
+
+#[test]
+fn signal_binding_rejects_a_signal_of_the_wrong_element_type() {
+    let errors = check_source_with_targets(
+        r#"
+        import std.Signal;
+        scene main {
+            let color = Signal.constant(red);
+            Washes.intensity <- color;
+        }
+        "#,
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Signal<Color>`")
+    }));
+}
+
+#[test]
+fn signal_binding_on_an_attribute_the_role_lacks_capability_for_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        rig contract DemoRig {
+            role Dimmers: Group<Intensity>;
+        }
+        scene main {
+            Dimmers.color <- Signal.constant(red);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("role does not provide required capability `Color`")
+    }));
+}
+
+#[test]
+fn signal_binding_then_transition_type_checks() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Signal;
+        scene main {
+            let dimmed = Signal.constant(20%);
+            Washes.intensity <- dimmed;
+            wait 2s;
+            Washes.intensity -> 100% over 1s;
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}

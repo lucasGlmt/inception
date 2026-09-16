@@ -573,3 +573,85 @@ fn call_intrinsic_pushes_its_return_type() {
     );
     verify(&module).expect("valid module should verify");
 }
+
+#[test]
+fn signal_constant_pushes_the_matching_signal_type() {
+    use crate::value::ScalarValueType;
+
+    let module = function_with(
+        vec![Constant::Intensity(32767)],
+        vec![ValueType::Signal(ScalarValueType::Intensity)],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SignalConstantIntensity,
+                arg_count: 1,
+            },
+            Instruction::StoreLocal(LocalId(0)),
+            Instruction::Return,
+        ],
+        1,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn signal_of_one_element_type_is_not_a_signal_of_another() {
+    use crate::value::ScalarValueType;
+
+    // A local declared `Signal<Color>` but stored a `Signal<Intensity>`
+    // (mismatched element type) must be rejected, just like any other
+    // `StoreLocal` type mismatch.
+    let module = function_with(
+        vec![Constant::Intensity(32767)],
+        vec![ValueType::Signal(ScalarValueType::Color)],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SignalConstantIntensity,
+                arg_count: 1,
+            },
+            Instruction::StoreLocal(LocalId(0)),
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| matches!(
+        e.kind,
+        VerificationErrorKind::TypeMismatch {
+            expected: ValueType::Signal(ScalarValueType::Color),
+            found: ValueType::Signal(ScalarValueType::Intensity),
+        }
+    )));
+}
+
+#[test]
+fn signal_is_not_its_element_type() {
+    use crate::value::ScalarValueType;
+
+    // A local declared plain `Intensity` but stored a `Signal<Intensity>`
+    // must be rejected — no implicit unwrap at the bytecode level either.
+    let module = function_with(
+        vec![Constant::Intensity(32767)],
+        vec![ValueType::Intensity],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SignalConstantIntensity,
+                arg_count: 1,
+            },
+            Instruction::StoreLocal(LocalId(0)),
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| matches!(
+        e.kind,
+        VerificationErrorKind::TypeMismatch {
+            expected: ValueType::Intensity,
+            found: ValueType::Signal(ScalarValueType::Intensity),
+        }
+    )));
+}

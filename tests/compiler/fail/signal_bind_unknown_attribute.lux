@@ -1,0 +1,5 @@
+import std.Signal;
+
+scene main {
+    Washes.pan <- Signal.constant(50%);
+}

@@ -51,11 +51,30 @@ impl LoadedProgram {
             .map_err(RuntimeError::Vm)?;
         self.transitions
             .sample(now, &mut self.lighting)
-            .map_err(RuntimeError::Transition)
+            .map_err(RuntimeError::Transition)?;
+        // Signal bindings are resampled every frame regardless of whether
+        // the VM produced any progress this tick (it may be waiting, or
+        // already finished) — a binding outlives the instruction that
+        // created it, see `Vm::sample_signal_bindings`'s docs.
+        self.vm
+            .sample_signal_bindings(now, &mut self.lighting)
+            .map_err(RuntimeError::Signal)
     }
 
-    fn sample(&mut self, now: Timestamp) -> Result<(), inception_core::TransitionError> {
-        self.transitions.sample(now, &mut self.lighting)
+    /// Freezes this program's effective lighting state at `now` before it
+    /// is discarded by a hot reload — transitions and, per the same rule,
+    /// active signal bindings, so `preserve_compatible_state_from` reads a
+    /// fresh value rather than whatever `LightingState` last happened to
+    /// hold (see `Vm::sample_signal_bindings`'s docs; the new program's
+    /// own `<-` statements will recreate their own bindings on their own
+    /// `SignalStore` when it runs — nothing here migrates the old one).
+    fn sample(&mut self, now: Timestamp) -> Result<(), RuntimeError<std::convert::Infallible>> {
+        self.transitions
+            .sample(now, &mut self.lighting)
+            .map_err(RuntimeError::Transition)?;
+        self.vm
+            .sample_signal_bindings(now, &mut self.lighting)
+            .map_err(RuntimeError::Signal)
     }
 
     fn fixture_by_key(&self) -> BTreeMap<String, ResolvedFixture> {
@@ -97,6 +116,10 @@ impl LoadedProgram {
 
     pub fn active_transition_count(&self) -> usize {
         self.transitions.active_count()
+    }
+
+    pub fn active_binding_count(&self) -> usize {
+        self.vm.bindings().active_count()
     }
 
     pub fn lighting_state(&self) -> &LightingState {
@@ -148,6 +171,7 @@ impl<O: DmxOutput> RuntimeHost<O> {
         self.program.advance(now).map_err(|error| match error {
             RuntimeError::Vm(error) => RuntimeError::Vm(error),
             RuntimeError::Transition(error) => RuntimeError::Transition(error),
+            RuntimeError::Signal(error) => RuntimeError::Signal(error),
             RuntimeError::DmxOutput { source, .. } => match source {},
         })?;
         self.render_and_send()
@@ -162,7 +186,12 @@ impl<O: DmxOutput> RuntimeHost<O> {
         now: Timestamp,
     ) -> Result<ReloadReport, RuntimeError<O::Error>> {
         candidate.start().map_err(RuntimeError::Vm)?;
-        self.program.sample(now).map_err(RuntimeError::Transition)?;
+        self.program.sample(now).map_err(|error| match error {
+            RuntimeError::Vm(error) => RuntimeError::Vm(error),
+            RuntimeError::Transition(error) => RuntimeError::Transition(error),
+            RuntimeError::Signal(error) => RuntimeError::Signal(error),
+            RuntimeError::DmxOutput { source, .. } => match source {},
+        })?;
         let preserved_fixtures = candidate.preserve_compatible_state_from(&self.program);
         self.universes.extend(active_universes(&candidate.rig));
         self.program = candidate;
@@ -232,6 +261,10 @@ impl<O: DmxOutput> RuntimeHost<O> {
 
     pub fn active_transition_count(&self) -> usize {
         self.program.active_transition_count()
+    }
+
+    pub fn active_binding_count(&self) -> usize {
+        self.program.active_binding_count()
     }
 
     pub fn universes(&self) -> Vec<UniverseId> {

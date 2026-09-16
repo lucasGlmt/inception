@@ -1,0 +1,5 @@
+import std.Signal;
+
+scene main {
+    Washes.intensity <- Signal.constant(50%);
+}

@@ -4,6 +4,7 @@
 //! answers the semantic question without duplicating Lux typing rules.
 
 use crate::stdlib_bridge::from_param_type;
+use crate::types::SignalElement;
 use crate::{Attribute, Type};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,17 @@ impl ExpectedType {
 
     pub fn for_attribute(name: &str) -> Option<Self> {
         Attribute::from_name(name).map(|attribute| Self(attribute.value_type()))
+    }
+
+    /// The expected type on the right of `<-` for `<target>.<name> <- `,
+    /// i.e. `Signal<T>` where `T` is the same type [`Self::for_attribute`]
+    /// would report for `name` — every attribute's value type is a valid
+    /// `Signal` element (see `SignalElement`'s docs), so this never fails
+    /// for a name `for_attribute` itself accepts.
+    pub fn for_signal_binding(name: &str) -> Option<Self> {
+        let attribute = Attribute::from_name(name)?;
+        let element = SignalElement::from_type(attribute.value_type())?;
+        Some(Self(Type::Signal(element)))
     }
 
     pub const fn transition_duration() -> Self {

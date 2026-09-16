@@ -34,9 +34,9 @@ use lux_syntax::ast::{self, CallExpr, Expression, Item, SourceFile, Statement};
 use crate::environment::TargetEnvironment;
 use crate::error::HirError;
 use crate::hir::{
-    Capability, CapabilitySet, HirAssign, HirCall, HirCallee, HirExpr, HirExprStatement, HirFile,
-    HirLet, HirRigContract, HirRole, HirScene, HirStatement, HirTransition, HirWait, LocalDecl,
-    RoleCardinality, TypeAnnotation,
+    Capability, CapabilitySet, HirAssign, HirBindSignal, HirCall, HirCallee, HirExpr,
+    HirExprStatement, HirFile, HirLet, HirRigContract, HirRole, HirScene, HirStatement,
+    HirTransition, HirWait, LocalDecl, RoleCardinality, TypeAnnotation,
 };
 use crate::ids::{LocalId, RoleId, SceneId};
 use crate::user_modules::UserModuleEnvironment;
@@ -267,6 +267,22 @@ fn build_import_table(
     table
 }
 
+/// Copies a parsed `TypeName` into HIR's `TypeAnnotation`, recursively over
+/// `type_args` — the same "just a name, not yet validated" shape, only the
+/// name resolution boundary changes. Exposed (not just used internally by
+/// `lower`) so tooling that only has a syntax-level `TypeName` — e.g.
+/// `lux-lsp`, resolving a `let` binding's annotation for hover/completion
+/// without running full name resolution — can still reach
+/// `lux_typeck::resolve_annotation` (which only accepts HIR's
+/// `TypeAnnotation`) instead of re-implementing its `Signal<T>` handling.
+pub fn lower_type_name(t: &ast::TypeName) -> TypeAnnotation {
+    TypeAnnotation {
+        name: t.name.clone(),
+        span: t.span,
+        type_args: t.type_args.iter().map(lower_type_name).collect(),
+    }
+}
+
 /// Levenshtein edit distance, used only for "did you mean" suggestions
 /// over a module's (always tiny — a handful of names) member list. O(n*m)
 /// is more than cheap enough at that size.
@@ -368,6 +384,9 @@ impl Lowering<'_> {
             Statement::Transition(transition) => self
                 .lower_transition(scope, transition)
                 .map(HirStatement::Transition),
+            Statement::BindSignal(bind) => self
+                .lower_bind_signal(scope, bind)
+                .map(HirStatement::BindSignal),
         }
     }
 
@@ -396,6 +415,32 @@ impl Lowering<'_> {
             value: value?,
             duration: duration?,
             span: transition.span,
+        })
+    }
+
+    fn lower_bind_signal(
+        &mut self,
+        scope: &Scope,
+        bind: &ast::BindSignalStatement,
+    ) -> Option<HirBindSignal> {
+        let signal = self.resolve_expr(scope, &bind.signal);
+        let target = match self.targets.resolve(&bind.target.name) {
+            Some(target) => Some(target),
+            None => {
+                self.errors.push(HirError::new(
+                    format!("unknown target `{}`", bind.target.name),
+                    bind.target.span,
+                ));
+                None
+            }
+        };
+
+        Some(HirBindSignal {
+            target: target?,
+            attribute_name: bind.attribute.name.clone(),
+            attribute_span: bind.attribute.span,
+            signal: signal?,
+            span: bind.span,
         })
     }
 
@@ -445,10 +490,7 @@ impl Lowering<'_> {
             name: let_stmt.name.name.clone(),
             span: let_stmt.name.span,
             is_mut: let_stmt.is_mut,
-            type_annotation: let_stmt.type_annotation.as_ref().map(|t| TypeAnnotation {
-                name: t.name.clone(),
-                span: t.span,
-            }),
+            type_annotation: let_stmt.type_annotation.as_ref().map(lower_type_name),
         });
         scope.declare(let_stmt.name.name.clone(), id);
 

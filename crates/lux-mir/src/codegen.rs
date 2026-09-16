@@ -178,6 +178,13 @@ impl Builder {
                 });
                 -2
             }
+            MirInstruction::BindSignal { target, attribute } => {
+                code.push(Instruction::BindSignal {
+                    target: to_bytecode_target_id(*target),
+                    attribute: to_bytecode_attribute(*attribute),
+                });
+                -1
+            }
             MirInstruction::CallIntrinsic {
                 intrinsic,
                 arg_count,
@@ -247,6 +254,11 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::ColorRgb => B::ColorRgb,
         S::ColorMix => B::ColorMix,
         S::ColorHsv => B::ColorHsv,
+        S::SignalConstantInt => B::SignalConstantInt,
+        S::SignalConstantFloat => B::SignalConstantFloat,
+        S::SignalConstantAngle => B::SignalConstantAngle,
+        S::SignalConstantIntensity => B::SignalConstantIntensity,
+        S::SignalConstantColor => B::SignalConstantColor,
     }
 }
 
@@ -261,6 +273,17 @@ fn to_value_type(ty: Type) -> lux_bytecode::ValueType {
         Type::Angle => lux_bytecode::ValueType::Angle,
         Type::Frequency => lux_bytecode::ValueType::Frequency,
         Type::Tempo => lux_bytecode::ValueType::Tempo,
+        Type::Signal(elem) => lux_bytecode::ValueType::Signal(to_scalar_value_type(elem)),
+    }
+}
+
+fn to_scalar_value_type(elem: lux_typeck::SignalElement) -> lux_bytecode::ScalarValueType {
+    match elem {
+        lux_typeck::SignalElement::Int => lux_bytecode::ScalarValueType::Int,
+        lux_typeck::SignalElement::Float => lux_bytecode::ScalarValueType::Float,
+        lux_typeck::SignalElement::Angle => lux_bytecode::ScalarValueType::Angle,
+        lux_typeck::SignalElement::Intensity => lux_bytecode::ScalarValueType::Intensity,
+        lux_typeck::SignalElement::Color => lux_bytecode::ScalarValueType::Color,
     }
 }
 

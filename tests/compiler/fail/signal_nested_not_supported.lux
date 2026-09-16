@@ -1,0 +1,5 @@
+import std.Signal;
+
+scene main {
+    let s: Signal<Signal<Intensity>> = Signal.constant(50%);
+}

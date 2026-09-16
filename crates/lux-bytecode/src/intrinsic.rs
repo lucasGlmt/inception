@@ -13,7 +13,7 @@
 //! name: name-to-intrinsic resolution is finished by the time this
 //! instruction exists, back in `lux-hir`/`lux-typeck`.
 
-use crate::value::ValueType;
+use crate::value::{ScalarValueType, ValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntrinsicId {
@@ -31,6 +31,16 @@ pub enum IntrinsicId {
     ColorRgb,
     ColorMix,
     ColorHsv,
+    /// Builds a constant `Signal<T>` from one popped `T` value. Monomorphized
+    /// per element type (matching `MathAbsInt`/`MathAbsFloat`'s style)
+    /// rather than carrying a payload, so `IntrinsicId` stays a flat `Copy`
+    /// enum. Dispatched specially by `inception-vm`'s `Vm` rather than
+    /// through `eval_intrinsic` — see that crate's `intrinsic` module doc.
+    SignalConstantInt,
+    SignalConstantFloat,
+    SignalConstantAngle,
+    SignalConstantIntensity,
+    SignalConstantColor,
 }
 
 impl IntrinsicId {
@@ -50,6 +60,11 @@ impl IntrinsicId {
             IntrinsicId::ColorRgb => &[Int, Int, Int],
             IntrinsicId::ColorMix => &[Color, Color, Float],
             IntrinsicId::ColorHsv => &[Angle, Intensity, Intensity],
+            IntrinsicId::SignalConstantInt => &[Int],
+            IntrinsicId::SignalConstantFloat => &[Float],
+            IntrinsicId::SignalConstantAngle => &[Angle],
+            IntrinsicId::SignalConstantIntensity => &[Intensity],
+            IntrinsicId::SignalConstantColor => &[Color],
         }
     }
 
@@ -69,6 +84,11 @@ impl IntrinsicId {
             IntrinsicId::ColorRgb | IntrinsicId::ColorMix | IntrinsicId::ColorHsv => {
                 ValueType::Color
             }
+            IntrinsicId::SignalConstantInt => ValueType::Signal(ScalarValueType::Int),
+            IntrinsicId::SignalConstantFloat => ValueType::Signal(ScalarValueType::Float),
+            IntrinsicId::SignalConstantAngle => ValueType::Signal(ScalarValueType::Angle),
+            IntrinsicId::SignalConstantIntensity => ValueType::Signal(ScalarValueType::Intensity),
+            IntrinsicId::SignalConstantColor => ValueType::Signal(ScalarValueType::Color),
         }
     }
 }
@@ -94,8 +114,50 @@ mod tests {
             IntrinsicId::ColorRgb,
             IntrinsicId::ColorMix,
             IntrinsicId::ColorHsv,
+            IntrinsicId::SignalConstantInt,
+            IntrinsicId::SignalConstantFloat,
+            IntrinsicId::SignalConstantAngle,
+            IntrinsicId::SignalConstantIntensity,
+            IntrinsicId::SignalConstantColor,
         ] {
             assert!(!intrinsic.param_types().is_empty());
+        }
+    }
+
+    #[test]
+    fn signal_constant_intrinsics_return_the_matching_signal_type() {
+        use crate::value::ScalarValueType;
+
+        let cases = [
+            (
+                IntrinsicId::SignalConstantInt,
+                ValueType::Int,
+                ScalarValueType::Int,
+            ),
+            (
+                IntrinsicId::SignalConstantFloat,
+                ValueType::Float,
+                ScalarValueType::Float,
+            ),
+            (
+                IntrinsicId::SignalConstantAngle,
+                ValueType::Angle,
+                ScalarValueType::Angle,
+            ),
+            (
+                IntrinsicId::SignalConstantIntensity,
+                ValueType::Intensity,
+                ScalarValueType::Intensity,
+            ),
+            (
+                IntrinsicId::SignalConstantColor,
+                ValueType::Color,
+                ScalarValueType::Color,
+            ),
+        ];
+        for (intrinsic, param, elem) in cases {
+            assert_eq!(intrinsic.param_types(), &[param]);
+            assert_eq!(intrinsic.return_type(), ValueType::Signal(elem));
         }
     }
 }

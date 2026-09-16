@@ -1,0 +1,3 @@
+scene main {
+    let s: Signal<Intensity> = 50%;
+}

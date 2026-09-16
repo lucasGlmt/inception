@@ -28,5 +28,5 @@ pub use module::{BytecodeModule, BytecodeVersion, Function};
 pub use role::{
     Capability, CapabilitySet, PortableRigContract, PortableRole, RoleCardinality, RoleId,
 };
-pub use value::{ColorValue, Constant, ValueType};
+pub use value::{ColorValue, Constant, ScalarValueType, ValueType};
 pub use verify::{VerificationError, VerificationErrorKind, verify};

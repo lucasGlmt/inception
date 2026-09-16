@@ -18,6 +18,22 @@ pub enum ValueType {
     Angle,
     Frequency,
     Tempo,
+    /// `Signal<T>`, mirroring `lux_typeck::Type::Signal`. Payload is a
+    /// separate, non-recursive enum (not `Box<ValueType>`) so `ValueType`
+    /// itself stays `Copy` — see `ScalarValueType`'s docs.
+    Signal(ScalarValueType),
+}
+
+/// The element types a `Signal<T>` may carry — mirrors
+/// `lux_typeck::SignalElement` independently, per this crate's
+/// frontend/runtime duplication idiom (see this module's doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarValueType {
+    Int,
+    Float,
+    Angle,
+    Intensity,
+    Color,
 }
 
 /// An RGB color value. Bytecode never sees a named color (`red`, `blue`,

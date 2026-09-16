@@ -142,8 +142,16 @@ impl Parser {
         }
     }
 
+    /// Parses a type name, optionally followed by one bracketed type
+    /// argument (`Signal<Intensity>`). `<`/`>` are unambiguous here: Lux
+    /// defines no comparison operators, so a standalone `Less`/`Greater`
+    /// token in type position can only ever start/end a type argument —
+    /// same reasoning already relied on for `Group<Color + Intensity>` in
+    /// `parse_role_decl`. Whether a given name is actually allowed to carry
+    /// a type argument (today, only `Signal`) is decided later, in
+    /// `lux-typeck` — this parses the syntax generally.
     fn expect_type_name(&mut self) -> TypeName {
-        if let TokenKind::Ident(_) = self.peek_kind() {
+        let mut result = if let TokenKind::Ident(_) = self.peek_kind() {
             let tok = self.advance();
             let TokenKind::Ident(name) = tok.kind else {
                 unreachable!()
@@ -151,6 +159,7 @@ impl Parser {
             TypeName {
                 name,
                 span: tok.span,
+                type_args: Vec::new(),
             }
         } else {
             let tok = self.peek().clone();
@@ -161,8 +170,20 @@ impl Parser {
             TypeName {
                 name: String::new(),
                 span: Span::at(tok.span.start),
+                type_args: Vec::new(),
             }
+        };
+
+        if self.check(TokenKind::Less) {
+            self.advance();
+            let arg = self.expect_type_name();
+            let close = self.expect(TokenKind::Greater, "expected `>` after type argument");
+            let end = close.map(|t| t.span.end).unwrap_or(arg.span.end);
+            result.span = Span::new(result.span.start, end);
+            result.type_args.push(arg);
         }
+
+        result
     }
 
     fn parse_source_file(&mut self) -> SourceFile {
@@ -351,8 +372,22 @@ impl Parser {
                 duration,
                 span: Span::new(start, end),
             })
+        } else if self.check(TokenKind::LeftArrow) {
+            self.advance();
+            let signal = self.parse_expression();
+            let semi = self.expect(TokenKind::Semicolon, "expected `;` after signal binding");
+            let end = semi.map(|t| t.span.end).unwrap_or(signal.span().end);
+            Statement::BindSignal(BindSignalStatement {
+                target,
+                attribute,
+                signal,
+                span: Span::new(start, end),
+            })
         } else {
-            self.expect(TokenKind::Eq, "expected `=` or `->` after attribute name");
+            self.expect(
+                TokenKind::Eq,
+                "expected `=`, `->` or `<-` after attribute name",
+            );
             let value = self.parse_expression();
             let semi = self.expect(
                 TokenKind::Semicolon,
@@ -668,6 +703,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_generic_type_annotation() {
+        let src = r#"
+            scene main {
+                let s: Signal<Intensity> = x;
+            }
+        "#;
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        match &scene.body.statements[0] {
+            Statement::Let(let_stmt) => {
+                let annotation = let_stmt.type_annotation.as_ref().unwrap();
+                assert_eq!(annotation.name, "Signal");
+                assert_eq!(annotation.type_args.len(), 1);
+                assert_eq!(annotation.type_args[0].name, "Intensity");
+                assert!(annotation.type_args[0].type_args.is_empty());
+            }
+            other => panic!("expected let statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_nested_generic_type_annotation() {
+        // The parser accepts arbitrary nesting syntactically; rejecting
+        // `Signal<Signal<...>>` semantically is `lux-typeck`'s job.
+        let src = r#"
+            scene main {
+                let s: Signal<Signal<Intensity>> = x;
+            }
+        "#;
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        match &scene.body.statements[0] {
+            Statement::Let(let_stmt) => {
+                let annotation = let_stmt.type_annotation.as_ref().unwrap();
+                assert_eq!(annotation.name, "Signal");
+                assert_eq!(annotation.type_args[0].name, "Signal");
+                assert_eq!(annotation.type_args[0].type_args[0].name, "Intensity");
+            }
+            other => panic!("expected let statement, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_mut_and_literals() {
         let src = r#"
             scene main {
@@ -838,6 +920,105 @@ mod tests {
     }
 
     #[test]
+    fn parses_attribute_signal_binding_as_a_dedicated_statement() {
+        let file = parse("scene main { Washes.intensity <- level; }").unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        let Statement::BindSignal(bind) = &scene.body.statements[0] else {
+            panic!(
+                "expected bind-signal statement, got {:?}",
+                scene.body.statements[0]
+            );
+        };
+        assert_eq!(bind.target.name, "Washes");
+        assert_eq!(bind.attribute.name, "intensity");
+        assert!(matches!(&bind.signal, Expression::Identifier(id) if id.name == "level"));
+    }
+
+    #[test]
+    fn parses_attribute_signal_binding_with_inline_call() {
+        let file = parse("scene main { Washes.intensity <- Signal.constant(50%); }").unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        let Statement::BindSignal(bind) = &scene.body.statements[0] else {
+            panic!("expected bind-signal statement");
+        };
+        assert!(matches!(&bind.signal, Expression::Call(_)));
+    }
+
+    /// `=`, `->` and `<-` must never be confused by the lexer: in
+    /// particular `<-` (lexed as one token) must not be mistaken for
+    /// `<` followed by unary `-`, and `->`/`<-` must produce distinct
+    /// statement kinds even though they share the `-` byte.
+    #[test]
+    fn assign_transition_and_bind_signal_are_lexically_distinct() {
+        let assign = parse("scene main { Washes.intensity = 50%; }").unwrap();
+        let transition = parse("scene main { Washes.intensity -> 50% over 1s; }").unwrap();
+        let bind = parse("scene main { Washes.intensity <- level; }").unwrap();
+
+        let Item::Scene(assign_scene) = &assign.items[0] else {
+            unreachable!()
+        };
+        let Item::Scene(transition_scene) = &transition.items[0] else {
+            unreachable!()
+        };
+        let Item::Scene(bind_scene) = &bind.items[0] else {
+            unreachable!()
+        };
+        assert!(matches!(
+            assign_scene.body.statements[0],
+            Statement::Assign(_)
+        ));
+        assert!(matches!(
+            transition_scene.body.statements[0],
+            Statement::Transition(_)
+        ));
+        assert!(matches!(
+            bind_scene.body.statements[0],
+            Statement::BindSignal(_)
+        ));
+    }
+
+    #[test]
+    fn malformed_signal_bindings_report_syntax_errors_without_panicking() {
+        for source in [
+            "scene main { Washes.intensity <- ; }",
+            "scene main { Washes.intensity <- level }",
+        ] {
+            assert!(
+                parse(source).is_err(),
+                "source unexpectedly parsed: {source}"
+            );
+        }
+    }
+
+    /// LSP recovery: an incomplete `<-` statement, as it exists mid-typing,
+    /// must still produce a `BindSignal` node (not fall back to `Assign`
+    /// or drop the statement entirely) so the LSP can still offer
+    /// `ExpectedType`/completions for it — mirrors the existing transition
+    /// recovery behavior.
+    #[test]
+    fn incomplete_signal_binding_still_recovers_to_a_bind_signal_node() {
+        for source in [
+            "scene main { Washes.intensity <- ",
+            "scene main { Washes.intensity <- sig",
+        ] {
+            let (file, errors) = parse_recovering(source);
+            assert!(!errors.is_empty(), "expected recovery errors for {source}");
+            let Item::Scene(scene) = &file.items[0] else {
+                panic!("expected scene")
+            };
+            assert!(
+                matches!(scene.body.statements.last(), Some(Statement::BindSignal(_))),
+                "expected a BindSignal statement to be recovered for {source}, got {:?}",
+                scene.body.statements
+            );
+        }
+    }
+
+    #[test]
     fn parses_rig_contract_with_typed_group_role() {
         let file =
             parse("rig contract DemoRig { role Washes: Group<Color + Intensity>; } scene main {}")
@@ -913,6 +1094,9 @@ mod tests {
             "scene main { Washes. = 1; }",
             "scene main { Washes.intensity = ; }",
             "scene main { . = 1; }",
+            "scene main { Washes.intensity <- ",
+            "scene main { Washes.intensity <- sig",
+            "scene main { Washes.intensity < -sig; }",
         ];
         for input in inputs {
             let _ = parse(input); // must not panic

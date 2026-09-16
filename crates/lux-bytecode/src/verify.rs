@@ -431,6 +431,29 @@ fn verify_instruction(
                 )),
             }
         }
+        Instruction::BindSignal { target, attribute } => {
+            if target.0 >= module.target_count {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::InvalidTargetId(target),
+                ));
+            }
+            let expected = attribute.signal_value_type();
+            match stack.pop() {
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
+                Some(found) if found != expected => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::TypeMismatch { expected, found },
+                )),
+                Some(_) => {}
+            }
+        }
     }
 }
 

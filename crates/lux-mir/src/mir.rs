@@ -129,6 +129,16 @@ pub enum MirInstruction {
         target: lux_hir::TargetId,
         attribute: lux_typeck::Attribute,
     },
+    /// Pops a `Signal<T>` value and installs it as the continuously-sampled
+    /// controller for `attribute` on `target`, replacing whatever
+    /// transition or signal binding previously controlled it — see
+    /// `lux_bytecode::Instruction::BindSignal`, which this lowers to
+    /// directly. Deliberately *not* lowered to "sample once + SetAttribute":
+    /// the binding must stay alive in the runtime past this instruction.
+    BindSignal {
+        target: lux_hir::TargetId,
+        attribute: lux_typeck::Attribute,
+    },
     /// Calls one builtin stdlib intrinsic (`std.Math`, `std.Color`, ...).
     /// `intrinsic` is `lux-stdlib`'s compiler-side id, reused directly
     /// (MIR already depends on `lux-stdlib`, so redefining it here would

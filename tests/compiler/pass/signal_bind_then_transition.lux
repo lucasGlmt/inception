@@ -1,0 +1,11 @@
+import std.Signal;
+
+scene main {
+    let dimmed = Signal.constant(20%);
+
+    Washes.intensity <- dimmed;
+
+    wait 2s;
+
+    Washes.intensity -> 100% over 1s;
+}

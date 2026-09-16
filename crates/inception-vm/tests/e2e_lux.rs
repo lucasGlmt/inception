@@ -147,6 +147,40 @@ fn stdlib_module_worked_example_runs_to_completion() {
 }
 
 #[test]
+fn signal_constant_program_compiles_and_runs_to_completion() {
+    // The Signal<T> milestone's own success criterion (see
+    // docs/rfcs/0002-signal-type.md): a `Signal<Intensity>` local, built
+    // from `Signal.constant`, taken all the way through parsing, HIR,
+    // type checking, MIR, bytecode, the verifier and VM execution. This
+    // milestone doesn't wire a signal into any lighting attribute yet, so
+    // there's no DMX/attribute assertion to make here — see
+    // `inception_vm::signal`'s unit tests for the deterministic-sampling
+    // behavior itself, and `call_intrinsic_signal_constant_pushes_a_sampleable_signal`
+    // in `inception-vm`'s own test suite for sampling driven through a
+    // real `Vm`.
+    let source = r#"
+        import std.Signal;
+
+        scene main {
+            let level: Signal<Intensity> = Signal.constant(50%);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("signal program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    assert!(vm.is_finished());
+}
+
+#[test]
 fn a_scene_with_no_wait_finishes_on_the_first_run() {
     let source = r#"
         scene main {

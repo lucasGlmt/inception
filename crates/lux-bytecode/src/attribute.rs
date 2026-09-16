@@ -4,7 +4,7 @@
 //! the same reason `ValueType` mirrors `lux_typeck::Type`: this crate
 //! must not depend on the compiler frontend.
 
-use crate::value::ValueType;
+use crate::value::{ScalarValueType, ValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attribute {
@@ -18,6 +18,16 @@ impl Attribute {
         match self {
             Attribute::Intensity => ValueType::Intensity,
             Attribute::Color => ValueType::Color,
+        }
+    }
+
+    /// The `Signal<T>` value type a `BindSignal` for this attribute must
+    /// pop — the same `T` as [`Attribute::value_type`], wrapped in
+    /// `Signal`.
+    pub fn signal_value_type(self) -> ValueType {
+        match self {
+            Attribute::Intensity => ValueType::Signal(ScalarValueType::Intensity),
+            Attribute::Color => ValueType::Signal(ScalarValueType::Color),
         }
     }
 }

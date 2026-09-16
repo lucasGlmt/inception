@@ -17,6 +17,7 @@ use lux_compiler::TargetEnvironment;
 fn fixture_environment() -> TargetEnvironment {
     let mut targets = TargetEnvironment::new();
     targets.insert("Washes");
+    targets.insert("Backs");
     targets
 }
 

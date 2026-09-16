@@ -74,4 +74,18 @@ pub enum Instruction {
         target: TargetId,
         attribute: Attribute,
     },
+
+    /// Pops a `Signal<T>` value (`T` must match `attribute.value_type()`)
+    /// and installs it as the continuously-sampled controller for
+    /// `attribute` on every fixture `target` resolves to, replacing any
+    /// transition or signal binding previously active on that
+    /// `(fixture, attribute)` pair. Net stack effect is `-1`, same as
+    /// `SetAttribute`. Unlike `SetAttribute`, this does not itself write a
+    /// value into `LightingState` — the binding is sampled continuously by
+    /// the runtime, not just once here (see `AGENTS.md`'s deterministic
+    /// signal-sampling rule).
+    BindSignal {
+        target: TargetId,
+        attribute: Attribute,
+    },
 }

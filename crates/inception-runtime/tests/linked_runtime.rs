@@ -67,6 +67,186 @@ fn immediate_source(percent: u8) -> String {
     )
 }
 
+fn signal_source(percent: u8) -> String {
+    format!(
+        r#"
+        import std.Signal;
+        rig contract DemoRig {{
+            role Washes: Group<Intensity>;
+        }}
+        scene main {{
+            Washes.intensity <- Signal.constant({percent}%);
+        }}
+        "#
+    )
+}
+
+fn linked_two_role_shared_signal_image() -> RuntimeImage {
+    let source = r#"
+        import std.Signal;
+        rig contract DemoRig {
+            role Front: Group<Intensity>;
+            role Back: Group<Intensity>;
+        }
+        scene main {
+            let level = Signal.constant(25%);
+            Front.intensity <- level;
+            Back.intensity <- level;
+        }
+    "#;
+    let program = lux_compiler::compile_portable(source).unwrap();
+    let definition = FixtureDefinition::new(
+        "Dimmer",
+        1,
+        CapabilitySet::from_capabilities([Capability::Intensity]),
+        FixtureMappings {
+            intensity: Some(0),
+            color: None,
+        },
+    )
+    .unwrap();
+    let mut library = FixtureLibrary::new();
+    library.insert(definition);
+    let mut patch = Patch::new("Venue");
+    patch
+        .add_fixture("front_wash", "Dimmer", UniverseId(1), 1)
+        .unwrap();
+    patch
+        .add_fixture("back_wash", "Dimmer", UniverseId(1), 2)
+        .unwrap();
+    let rig = RigBinding {
+        name: "VenueRig".into(),
+        contract: "DemoRig".into(),
+        bindings: vec![
+            RoleBinding {
+                role: "Front".into(),
+                fixtures: vec!["front_wash".into()],
+            },
+            RoleBinding {
+                role: "Back".into(),
+                fixtures: vec!["back_wash".into()],
+            },
+        ],
+    };
+    link(&program, &library, &patch, &rig).unwrap()
+}
+
+/// Item 60/61: `Front.intensity <- Signal.constant(50%);`, driven through
+/// the real `RuntimeEngine` (compile -> link -> VM -> signal binding
+/// engine -> renderer -> DMX), not just the `SignalBindingStore` in
+/// isolation.
+#[test]
+fn signal_constant_binding_produces_stable_dmx_at_any_timestamp() {
+    let image = linked_image_for(&signal_source(50), &[("wash".into(), UniverseId(1), 1)]);
+    let mut engine = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+
+    engine.start(Timestamp::ZERO).unwrap();
+    let expected = engine.output().last_frame(UniverseId(1)).unwrap()[0];
+    assert!(expected > 0, "50% should not render as blackout");
+
+    // Item 35/64: the same value at every timestamp, including ones far
+    // apart — this is what proves the binding samples `now` rather than
+    // depending on how many frames were rendered in between.
+    for at in [
+        Timestamp::from_millis(25),
+        Timestamp::from_secs(1),
+        Timestamp::from_secs(10),
+        Timestamp::from_secs(3600),
+    ] {
+        engine.tick(at).unwrap();
+        assert_eq!(
+            engine.output().last_frame(UniverseId(1)).unwrap()[0],
+            expected,
+            "mismatch at {at:?}"
+        );
+    }
+}
+
+/// Item 62: a target with several fixtures gets the same signal-driven
+/// value on all of them.
+#[test]
+fn signal_binding_drives_every_fixture_of_a_multi_fixture_target() {
+    let image = linked_image_for(
+        &signal_source(25),
+        &[
+            ("a".into(), UniverseId(1), 1),
+            ("b".into(), UniverseId(1), 2),
+            ("c".into(), UniverseId(1), 3),
+        ],
+    );
+    let mut engine = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    engine.start(Timestamp::ZERO).unwrap();
+
+    let frame = engine.output().last_frame(UniverseId(1)).unwrap();
+    assert!(frame[0] > 0);
+    assert_eq!(frame[0], frame[1]);
+    assert_eq!(frame[1], frame[2]);
+}
+
+/// Item 63: two different targets bound to the same `let`-bound signal
+/// both render its value, end to end.
+#[test]
+fn a_shared_signal_drives_two_independent_targets_consistently() {
+    let image = linked_two_role_shared_signal_image();
+    let mut engine = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    engine.start(Timestamp::ZERO).unwrap();
+
+    let frame = engine.output().last_frame(UniverseId(1)).unwrap();
+    assert!(frame[0] > 0);
+    assert_eq!(frame[0], frame[1]);
+}
+
+/// Item 36: a scene consisting only of `<-` (no `wait`) already finishes
+/// the VM inside `start()` — the binding must keep driving DMX long
+/// after that, since it isn't tied to any VM instruction still "in
+/// flight".
+#[test]
+fn signal_binding_keeps_driving_dmx_long_after_the_scene_finishes() {
+    let image = linked_image_for(&signal_source(50), &[("wash".into(), UniverseId(1), 1)]);
+    let mut engine = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    engine.start(Timestamp::ZERO).unwrap();
+    let expected = engine.output().last_frame(UniverseId(1)).unwrap()[0];
+
+    engine.tick(Timestamp::from_secs(3600)).unwrap();
+
+    assert_eq!(
+        engine.output().last_frame(UniverseId(1)).unwrap()[0],
+        expected
+    );
+}
+
+/// Item 33/57: a direct `=` after a signal binding detaches it — the
+/// assigned value must stay stable afterward, not get overwritten by the
+/// old signal on a later frame.
+#[test]
+fn direct_assignment_after_a_signal_binding_stays_stable() {
+    let source = r#"
+        import std.Signal;
+        rig contract DemoRig {
+            role Washes: Group<Intensity>;
+        }
+        scene main {
+            let level = Signal.constant(50%);
+            Washes.intensity <- level;
+            wait 2s;
+            Washes.intensity = 25%;
+        }
+    "#;
+    let image = linked_image_for(source, &[("wash".into(), UniverseId(1), 1)]);
+    let mut engine = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    engine.start(Timestamp::ZERO).unwrap();
+
+    engine.tick(Timestamp::from_secs(2)).unwrap();
+    let after_assign = engine.output().last_frame(UniverseId(1)).unwrap()[0];
+    assert_eq!(after_assign, 64); // 25% -> 16384 -> DMX 64
+
+    engine.tick(Timestamp::from_secs(10)).unwrap();
+    assert_eq!(
+        engine.output().last_frame(UniverseId(1)).unwrap()[0],
+        after_assign
+    );
+}
+
 fn passive_source() -> &'static str {
     r#"
     rig contract DemoRig {
@@ -315,6 +495,36 @@ fn reload_samples_transition_and_clears_it_while_preserving_effective_value() {
     assert_eq!(report.preserved_fixtures, 1);
     assert_eq!(host.active_transition_count(), 0);
     assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 102);
+}
+
+/// Item 38: hot reload samples the old program's active signal bindings
+/// at `now` (like it already does for transitions) before discarding
+/// them, so a compatible fixture in the new program starts from the
+/// signal's last effective value rather than losing it.
+#[test]
+fn reload_samples_signal_binding_and_preserves_effective_value() {
+    let fixtures = [("wash".into(), UniverseId(1), 1)];
+    let image_a = linked_image_for(&signal_source(40), &fixtures);
+    let image_b = linked_image_for(passive_source(), &fixtures);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    host.tick(Timestamp::from_secs(4)).unwrap();
+    let before_reload = host.output().last_frame(UniverseId(1)).unwrap()[0];
+
+    let report = host
+        .reload(
+            inception_runtime::LoadedProgram::new(image_b).unwrap(),
+            Timestamp::from_secs(4),
+        )
+        .unwrap();
+    host.tick(Timestamp::from_secs(4)).unwrap();
+
+    assert_eq!(report.preserved_fixtures, 1);
+    assert_eq!(host.active_binding_count(), 0);
+    assert_eq!(
+        host.output().last_frame(UniverseId(1)).unwrap()[0],
+        before_reload
+    );
 }
 
 #[test]

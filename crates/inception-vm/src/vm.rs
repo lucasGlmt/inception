@@ -15,9 +15,11 @@
 use inception_core::{Clock, LightingState, TransitionEngine};
 use lux_bytecode::{BytecodeModule, FunctionId, Instruction};
 
+use crate::binding::SignalBindingStore;
 use crate::error::{VmError, VmErrorKind, VmInitError};
 use crate::frame::Frame;
 use crate::intrinsic::eval_intrinsic;
+use crate::signal::{SignalError, SignalKind, SignalStore};
 use crate::state::VmState;
 use crate::value::Value;
 
@@ -53,6 +55,16 @@ pub struct Vm {
     frame: Option<Frame>,
     /// Saved caller frames, for `Call`/`Return`.
     call_stack: Vec<Frame>,
+    /// Every signal created by this program's execution so far, via
+    /// `Signal.constant` (`SignalConstant*` intrinsics). Owned by this
+    /// `Vm` and never migrated: reloading a program means building a new
+    /// `Vm` — see `crate::signal`'s module doc.
+    signals: SignalStore,
+    /// Every `(fixture, attribute)` currently controlled by a live `<-`
+    /// signal binding. Owned alongside `signals` for the same reason (see
+    /// `crate::binding`'s module doc): sampling a binding needs both the
+    /// binding's `SignalId` and the `SignalStore` it points into.
+    bindings: SignalBindingStore,
 }
 
 impl Vm {
@@ -79,6 +91,8 @@ impl Vm {
             stack: Vec::new(),
             frame: None,
             call_stack: Vec::new(),
+            signals: SignalStore::new(),
+            bindings: SignalBindingStore::new(),
         })
     }
 
@@ -101,6 +115,36 @@ impl Vm {
     /// The current operand stack, top last. For tests/debugging only.
     pub fn stack(&self) -> &[Value] {
         &self.stack
+    }
+
+    /// Every signal created by this program's execution so far. For
+    /// tests/debugging only.
+    pub fn signals(&self) -> &SignalStore {
+        &self.signals
+    }
+
+    /// Every `(fixture, attribute)` currently controlled by a live `<-`
+    /// binding. For tests/debugging, and for `sample_signal_bindings`'s
+    /// caller if it needs the count (mirrors `active_count`-style APIs
+    /// elsewhere, e.g. `inception_core::TransitionEngine::active_count`).
+    pub fn bindings(&self) -> &SignalBindingStore {
+        &self.bindings
+    }
+
+    /// Samples every active signal binding at `now` and writes the result
+    /// into `lighting` — the runtime loop's per-frame counterpart to
+    /// `inception_core::TransitionEngine::sample`. Deliberately *not*
+    /// folded into `run_until_blocked`: bindings must keep being sampled
+    /// every frame even while the VM itself is blocked on `WAIT` or has
+    /// already finished (item 36 of the signal-binding task brief — a
+    /// binding outlives the instruction that created it, and does not
+    /// depend on any VM instruction still being "in flight").
+    pub fn sample_signal_bindings(
+        &self,
+        now: inception_core::Timestamp,
+        lighting: &mut LightingState,
+    ) -> Result<(), SignalError> {
+        self.bindings.sample(&self.signals, now, lighting)
     }
 
     /// The function the VM is currently executing, if any (`None` before
@@ -246,6 +290,15 @@ impl Vm {
                     lighting,
                     transitions,
                 ),
+            Instruction::BindSignal { target, attribute } => self.exec_bind_signal(
+                function_id,
+                pc,
+                target,
+                attribute,
+                clock,
+                lighting,
+                transitions,
+            ),
         }
     }
 
@@ -354,6 +407,11 @@ impl Vm {
     /// declares, and applies it in `lighting` — never touching DMX (see
     /// this module's docs). This is the only place the VM talks to the
     /// lighting world at all.
+    ///
+    /// An immediate `=` also detaches any `<-` signal binding active on
+    /// the same `(fixture, attribute)` (item 27 of the signal-binding
+    /// task brief): the new value must stay stable, not get overwritten
+    /// by the old binding on the next frame.
     fn exec_set_attribute(
         &mut self,
         function: FunctionId,
@@ -377,6 +435,12 @@ impl Vm {
         })?;
 
         let core_target = inception_core::TargetId(target.0);
+        let core_attribute = attribute_value.attribute();
+        if let Ok(fixtures) = lighting.target_fixtures(core_target) {
+            for &fixture in fixtures {
+                self.bindings.unbind(fixture, core_attribute);
+            }
+        }
         transitions
             .set_target_attribute(core_target, attribute_value, lighting)
             .map_err(|err| transition_error(function, pc, target, err))?;
@@ -384,6 +448,16 @@ impl Vm {
         Ok(Step::Continue)
     }
 
+    /// Starts a finite transition. A `->` also detaches any `<-` signal
+    /// binding active on the same `(fixture, attribute)` (item 28): the
+    /// signal's current value is sampled at `now` and written into
+    /// `lighting` *before* the binding is removed, so
+    /// `TransitionEngine::start_transition`'s own read of the fixture's
+    /// current value (its transition's `from`) picks up the signal's
+    /// value rather than a stale one — the "signal → transition" case
+    /// (item 29): the transition must start from wherever the signal
+    /// actually was, not from whatever `LightingState` last happened to
+    /// hold.
     #[allow(clippy::too_many_arguments)]
     fn exec_transition_attribute<C: Clock>(
         &mut self,
@@ -421,15 +495,97 @@ impl Vm {
             )
         })?;
 
+        let core_target = inception_core::TargetId(target.0);
+        let core_attribute = attribute_value.attribute();
+        if let Ok(fixtures) = lighting.target_fixtures(core_target) {
+            // `.to_vec()` is required here, not just clippy-suggested
+            // `.iter().copied()`: the loop body below mutates `lighting`
+            // (`set_fixture_attribute`), and `fixtures` borrows from it —
+            // an unowned iterator would keep that borrow alive across the
+            // mutation.
+            #[allow(clippy::unnecessary_to_owned)]
+            for fixture in fixtures.to_vec() {
+                if let Some(signal) = self.bindings.unbind(fixture, core_attribute) {
+                    let sampled = self
+                        .signals
+                        .sample(signal, clock.now())
+                        .map_err(|err| signal_error(function, pc, err))?;
+                    if let Some(current) = sampled.into_attribute_value(attribute) {
+                        lighting.set_fixture_attribute(fixture, current);
+                    }
+                }
+            }
+        }
+
         transitions
             .start_transition(
                 clock.now(),
-                inception_core::TargetId(target.0),
+                core_target,
                 attribute_value,
                 duration,
                 lighting,
             )
             .map_err(|err| transition_error(function, pc, target, err))?;
+        Ok(Step::Continue)
+    }
+
+    /// Installs a continuous signal binding. Detaches (and stabilizes,
+    /// per `TransitionEngine::cancel`'s docs) any transition active on
+    /// the same `(fixture, attribute)` first — the "transition → signal"
+    /// case (item 30) — then registers the binding. Deliberately does
+    /// *not* sample the signal itself here (see `crate::binding`'s
+    /// module doc, item 20): the freshly written value only becomes
+    /// visible once the runtime loop's next `sample_signal_bindings`
+    /// call runs, same frame, right after this instruction stream
+    /// finishes — see item 31, "the signal wins immediately", which
+    /// holds because that call always happens before the frame is
+    /// rendered.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_bind_signal<C: Clock>(
+        &mut self,
+        function: FunctionId,
+        pc: usize,
+        target: lux_bytecode::TargetId,
+        attribute: lux_bytecode::Attribute,
+        clock: &C,
+        lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
+    ) -> Result<Step, VmError> {
+        let value = self.pop(function, pc)?;
+        let expected = attribute.signal_value_type();
+        let found = value.value_type();
+        let Value::Signal(_, signal) = value else {
+            return Err(VmError::new(
+                function,
+                pc,
+                VmErrorKind::TypeMismatch { expected, found },
+            ));
+        };
+        if found != expected {
+            return Err(VmError::new(
+                function,
+                pc,
+                VmErrorKind::TypeMismatch { expected, found },
+            ));
+        }
+
+        let core_target = inception_core::TargetId(target.0);
+        let core_attribute = match attribute {
+            lux_bytecode::Attribute::Intensity => inception_core::Attribute::Intensity,
+            lux_bytecode::Attribute::Color => inception_core::Attribute::Color,
+        };
+        let fixtures = lighting
+            .target_fixtures(core_target)
+            .map_err(|_| VmError::new(function, pc, VmErrorKind::UnknownTarget(target)))?
+            .to_vec();
+
+        for fixture in fixtures {
+            transitions
+                .cancel(clock.now(), fixture, core_attribute, lighting)
+                .map_err(|err| transition_error(function, pc, target, err))?;
+            self.bindings.bind(fixture, core_attribute, signal);
+        }
+
         Ok(Step::Continue)
     }
 
@@ -472,9 +628,15 @@ impl Vm {
     /// Pops `arg_count` operands (already verified, by construction, to
     /// have exactly the types `intrinsic.param_types()` expects — see
     /// `lux_bytecode::verify`), evaluates the intrinsic, and pushes its
-    /// one result. `eval_intrinsic` is total: there is no error path
-    /// here, matching every other "deterministic runtime, no panics"
-    /// operation in this VM.
+    /// one result.
+    ///
+    /// The 5 `SignalConstant*` intrinsics are handled here directly
+    /// instead of through `eval_intrinsic`: they need to insert into
+    /// `self.signals`, `Vm`-owned mutable state `eval_intrinsic` doesn't
+    /// have access to (see that function's module doc). Every other
+    /// intrinsic still goes through `eval_intrinsic`, which stays total —
+    /// there is no error path for those, matching every other
+    /// "deterministic runtime, no panics" operation in this VM.
     fn exec_call_intrinsic(
         &mut self,
         function: FunctionId,
@@ -489,8 +651,31 @@ impl Vm {
         // Popped last-argument-first; reverse to restore left-to-right
         // evaluation order before handing off to `eval_intrinsic`.
         args.reverse();
+
+        if let Some(elem) = signal_element_of(intrinsic) {
+            let id = self.signals.insert(SignalKind::Constant(args[0]));
+            self.stack.push(Value::Signal(elem, id));
+            return Ok(Step::Continue);
+        }
+
         self.stack.push(eval_intrinsic(intrinsic, &args));
         Ok(Step::Continue)
+    }
+}
+
+/// The `ScalarValueType` a `SignalConstant*` intrinsic produces a signal
+/// of, or `None` for every other (non-signal-producing) intrinsic.
+fn signal_element_of(
+    intrinsic: lux_bytecode::IntrinsicId,
+) -> Option<lux_bytecode::ScalarValueType> {
+    use lux_bytecode::{IntrinsicId, ScalarValueType};
+    match intrinsic {
+        IntrinsicId::SignalConstantInt => Some(ScalarValueType::Int),
+        IntrinsicId::SignalConstantFloat => Some(ScalarValueType::Float),
+        IntrinsicId::SignalConstantAngle => Some(ScalarValueType::Angle),
+        IntrinsicId::SignalConstantIntensity => Some(ScalarValueType::Intensity),
+        IntrinsicId::SignalConstantColor => Some(ScalarValueType::Color),
+        _ => None,
     }
 }
 
@@ -511,6 +696,11 @@ fn transition_error(
         inception_core::TransitionError::ClockOverflow => VmErrorKind::ClockOverflow,
     };
     VmError::new(function, pc, kind)
+}
+
+fn signal_error(function: FunctionId, pc: usize, error: SignalError) -> VmError {
+    let SignalError::UnknownSignal(id) = error;
+    VmError::new(function, pc, VmErrorKind::UnknownSignal(id))
 }
 
 /// Executes a binary arithmetic op over two runtime values.

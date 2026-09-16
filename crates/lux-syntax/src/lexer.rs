@@ -123,7 +123,12 @@ impl<'a> Lexer<'a> {
                 }
                 b'<' => {
                     self.advance();
-                    self.push(TokenKind::Less, start);
+                    if self.peek() == Some(b'-') {
+                        self.advance();
+                        self.push(TokenKind::LeftArrow, start);
+                    } else {
+                        self.push(TokenKind::Less, start);
+                    }
                 }
                 b'>' => {
                     self.advance();
@@ -432,6 +437,53 @@ mod tests {
     #[test]
     fn dot_does_not_interfere_with_float_literals() {
         assert_eq!(kinds("1.5"), vec![TokenKind::Float(1.5), TokenKind::Eof]);
+    }
+
+    #[test]
+    fn left_arrow_is_a_single_token_distinct_from_less_and_minus() {
+        assert_eq!(kinds("<-"), vec![TokenKind::LeftArrow, TokenKind::Eof]);
+        assert_eq!(
+            kinds("< -"),
+            vec![TokenKind::Less, TokenKind::Minus, TokenKind::Eof]
+        );
+        assert_eq!(kinds("<"), vec![TokenKind::Less, TokenKind::Eof]);
+    }
+
+    #[test]
+    fn assign_transition_and_bind_signal_operators_are_distinct_tokens() {
+        assert_eq!(
+            kinds("Washes.intensity <- level"),
+            vec![
+                TokenKind::Ident("Washes".to_string()),
+                TokenKind::Dot,
+                TokenKind::Ident("intensity".to_string()),
+                TokenKind::LeftArrow,
+                TokenKind::Ident("level".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("Washes.intensity -> level"),
+            vec![
+                TokenKind::Ident("Washes".to_string()),
+                TokenKind::Dot,
+                TokenKind::Ident("intensity".to_string()),
+                TokenKind::Arrow,
+                TokenKind::Ident("level".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("Washes.intensity = level"),
+            vec![
+                TokenKind::Ident("Washes".to_string()),
+                TokenKind::Dot,
+                TokenKind::Ident("intensity".to_string()),
+                TokenKind::Eq,
+                TokenKind::Ident("level".to_string()),
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]

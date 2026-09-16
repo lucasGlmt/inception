@@ -1,5 +1,5 @@
 use inception_core::{TransitionError, UniverseId};
-use inception_vm::VmError;
+use inception_vm::{SignalError, VmError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputOperation {
@@ -12,6 +12,7 @@ pub enum OutputOperation {
 pub enum RuntimeError<E> {
     Vm(VmError),
     Transition(TransitionError),
+    Signal(SignalError),
     DmxOutput {
         operation: OutputOperation,
         source: E,
@@ -24,6 +25,9 @@ impl<E: std::fmt::Display> std::fmt::Display for RuntimeError<E> {
             Self::Vm(error) => write!(formatter, "VM execution failed: {error:?}"),
             Self::Transition(error) => {
                 write!(formatter, "transition sampling failed: {error:?}")
+            }
+            Self::Signal(error) => {
+                write!(formatter, "signal binding sampling failed: {error:?}")
             }
             Self::DmxOutput { operation, source } => {
                 write!(

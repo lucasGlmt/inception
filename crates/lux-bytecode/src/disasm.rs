@@ -103,6 +103,9 @@ fn write_instruction(out: &mut String, module: &BytecodeModule, instruction: Ins
                 "TRANSITION_ATTRIBUTE", target.0
             );
         }
+        Instruction::BindSignal { target, attribute } => {
+            let _ = write!(out, "{:<11} #{} {attribute:?}", "BIND_SIGNAL", target.0);
+        }
     }
 }
 

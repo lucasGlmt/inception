@@ -208,7 +208,73 @@ static COLOR: StdModule = StdModule {
     doc: "Color composition: build colors from channels, blend them, or build from hue/saturation/value.",
 };
 
-pub static STD_MODULES: &[StdModule] = &[MATH, COLOR];
+static SIGNAL_CONSTANT_INT: Signature = Signature {
+    module_path: &["std", "Signal"],
+    name: "constant",
+    params: &[param!("value": Int)],
+    return_ty: ParamType::SignalInt,
+    intrinsic: IntrinsicId::SignalConstantInt,
+    pure: true,
+    doc: "constant(value: Int) -> Signal<Int> — a signal that always evaluates to `value`, for any timestamp.",
+};
+
+static SIGNAL_CONSTANT_FLOAT: Signature = Signature {
+    module_path: &["std", "Signal"],
+    name: "constant",
+    params: &[param!("value": Float)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::SignalConstantFloat,
+    pure: true,
+    doc: "constant(value: Float) -> Signal<Float> — a signal that always evaluates to `value`, for any timestamp.",
+};
+
+static SIGNAL_CONSTANT_ANGLE: Signature = Signature {
+    module_path: &["std", "Signal"],
+    name: "constant",
+    params: &[param!("value": Angle)],
+    return_ty: ParamType::SignalAngle,
+    intrinsic: IntrinsicId::SignalConstantAngle,
+    pure: true,
+    doc: "constant(value: Angle) -> Signal<Angle> — a signal that always evaluates to `value`, for any timestamp.",
+};
+
+static SIGNAL_CONSTANT_INTENSITY: Signature = Signature {
+    module_path: &["std", "Signal"],
+    name: "constant",
+    params: &[param!("value": Intensity)],
+    return_ty: ParamType::SignalIntensity,
+    intrinsic: IntrinsicId::SignalConstantIntensity,
+    pure: true,
+    doc: "constant(value: Intensity) -> Signal<Intensity> — a signal that always evaluates to `value`, for any timestamp.",
+};
+
+static SIGNAL_CONSTANT_COLOR: Signature = Signature {
+    module_path: &["std", "Signal"],
+    name: "constant",
+    params: &[param!("value": Color)],
+    return_ty: ParamType::SignalColor,
+    intrinsic: IntrinsicId::SignalConstantColor,
+    pure: true,
+    doc: "constant(value: Color) -> Signal<Color> — a signal that always evaluates to `value`, for any timestamp.",
+};
+
+static SIGNAL_FUNCTIONS: &[Signature] = &[
+    SIGNAL_CONSTANT_INT,
+    SIGNAL_CONSTANT_FLOAT,
+    SIGNAL_CONSTANT_ANGLE,
+    SIGNAL_CONSTANT_INTENSITY,
+    SIGNAL_CONSTANT_COLOR,
+];
+
+static SIGNAL: StdModule = StdModule {
+    path: &["std", "Signal"],
+    short_name: "Signal",
+    functions: SIGNAL_FUNCTIONS,
+    doc: "Time-sampled values: `Signal<T>` evaluates to a `T` at a given timestamp. \
+          V1 only supports `Signal.constant`, a signal whose value never depends on time.",
+};
+
+pub static STD_MODULES: &[StdModule] = &[MATH, COLOR, SIGNAL];
 
 pub fn find_module(path: &[&str]) -> Option<&'static StdModule> {
     STD_MODULES.iter().find(|m| m.path == path)
@@ -304,6 +370,47 @@ mod tests {
     fn resolves_exact_match() {
         let sig = resolve_overload(&["std", "Math"], "sin", &[ParamType::Angle]).unwrap();
         assert_eq!(sig.intrinsic, IntrinsicId::MathSin);
+    }
+
+    #[test]
+    fn resolves_signal_constant_overload_per_element_type() {
+        let cases = [
+            (
+                ParamType::Int,
+                IntrinsicId::SignalConstantInt,
+                ParamType::SignalInt,
+            ),
+            (
+                ParamType::Float,
+                IntrinsicId::SignalConstantFloat,
+                ParamType::SignalFloat,
+            ),
+            (
+                ParamType::Angle,
+                IntrinsicId::SignalConstantAngle,
+                ParamType::SignalAngle,
+            ),
+            (
+                ParamType::Intensity,
+                IntrinsicId::SignalConstantIntensity,
+                ParamType::SignalIntensity,
+            ),
+            (
+                ParamType::Color,
+                IntrinsicId::SignalConstantColor,
+                ParamType::SignalColor,
+            ),
+        ];
+        for (arg, intrinsic, return_ty) in cases {
+            let sig = resolve_overload(&["std", "Signal"], "constant", &[arg]).unwrap();
+            assert_eq!(sig.intrinsic, intrinsic);
+            assert_eq!(sig.return_ty, return_ty);
+        }
+    }
+
+    #[test]
+    fn signal_constant_has_five_overloads() {
+        assert_eq!(candidates(&["std", "Signal"], "constant").len(), 5);
     }
 
     #[test]

@@ -77,6 +77,7 @@ pub enum Statement {
     Expression(ExpressionStatement),
     Assign(AssignStatement),
     Transition(TransitionStatement),
+    BindSignal(BindSignalStatement),
 }
 
 impl Statement {
@@ -87,6 +88,7 @@ impl Statement {
             Statement::Expression(s) => s.span,
             Statement::Assign(s) => s.span,
             Statement::Transition(s) => s.span,
+            Statement::BindSignal(s) => s.span,
         }
     }
 }
@@ -116,15 +118,38 @@ pub struct TransitionStatement {
     pub span: Span,
 }
 
-/// A type name written in source (e.g. `Duration` in `let x: Duration = ...`).
+/// `<target>.<attribute> <- <signal>;` — a continuous signal binding, e.g.
+/// `Front.intensity <- level;`.
+///
+/// Distinct from [`AssignStatement`] (immediate value) and
+/// [`TransitionStatement`] (finite interpolation): this statement makes the
+/// attribute continuously derive its value from a `Signal<T>` until the
+/// binding is replaced or detached by a later `=`, `->` or `<-` on the same
+/// `(target, attribute)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BindSignalStatement {
+    pub target: Identifier,
+    pub attribute: Identifier,
+    pub signal: Expression,
+    pub span: Span,
+}
+
+/// A type name written in source (e.g. `Duration` in `let x: Duration = ...`,
+/// or `Signal` with `type_args: [Intensity]` for `Signal<Intensity>`).
 ///
 /// Kept as raw text + span rather than a resolved type: `lux-syntax` has no
-/// notion of which type names are valid, that's decided during type
-/// checking so the set of builtin types lives in exactly one place.
+/// notion of which type names are valid or which ones accept type
+/// arguments, that's decided during type checking so the set of builtin
+/// types (and which are generic) lives in exactly one place. `type_args` is
+/// empty for every non-generic type; the parser accepts `Name<Arg>` for any
+/// `Name`, and even allows `Arg` to itself carry type arguments — nothing
+/// here enforces that only `Signal` is generic or that nesting is
+/// disallowed, that's `lux-typeck`'s call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeName {
     pub name: String,
     pub span: Span,
+    pub type_args: Vec<TypeName>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

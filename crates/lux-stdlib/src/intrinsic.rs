@@ -26,4 +26,9 @@ pub enum IntrinsicId {
     ColorRgb,
     ColorMix,
     ColorHsv,
+    SignalConstantInt,
+    SignalConstantFloat,
+    SignalConstantAngle,
+    SignalConstantIntensity,
+    SignalConstantColor,
 }

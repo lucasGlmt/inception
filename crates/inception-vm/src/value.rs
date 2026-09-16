@@ -13,7 +13,9 @@
 //! stay duplicated).
 
 use inception_core::{AttributeValue, Duration, Intensity, Rgb};
-use lux_bytecode::{Attribute, ColorValue, Constant, ValueType};
+use lux_bytecode::{Attribute, ColorValue, Constant, ScalarValueType, ValueType};
+
+use crate::signal::SignalId;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
@@ -31,6 +33,16 @@ pub enum Value {
     Frequency(u32),
     /// Beats per minute.
     Tempo(u32),
+    /// A handle into the executing `Vm`'s `crate::signal::SignalStore`,
+    /// tagged with its element type — never the signal's definition
+    /// inline (see that module's docs for why). The element type is
+    /// carried alongside the id, not looked up through it: `value_type`
+    /// below (used defensively — e.g. `exec_store_local`'s belt-and-braces
+    /// check on already-verified bytecode) must stay a total, panic-free
+    /// method on `Value` alone, with no access to the `SignalStore` that
+    /// would otherwise be needed to answer "what kind of signal is this".
+    /// Both fields are `Copy`, so this keeps `Value` itself `Copy`.
+    Signal(ScalarValueType, SignalId),
 }
 
 impl Value {
@@ -45,6 +57,7 @@ impl Value {
             Value::Angle(_) => ValueType::Angle,
             Value::Frequency(_) => ValueType::Frequency,
             Value::Tempo(_) => ValueType::Tempo,
+            Value::Signal(elem, _) => ValueType::Signal(*elem),
         }
     }
 

@@ -1,0 +1,6 @@
+import std.Signal;
+
+scene main {
+    let tint: Signal<Color> = Signal.constant(red);
+    Washes.color <- tint;
+}

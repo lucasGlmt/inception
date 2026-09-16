@@ -103,11 +103,16 @@ pub struct LocalDecl {
 }
 
 /// A type name written in source, not yet checked against the set of
-/// known types (that happens in `lux-typeck`).
+/// known types (that happens in `lux-typeck`). Mirrors
+/// `lux_syntax::ast::TypeName`'s shape, including `type_args` for a
+/// generic type like `Signal<Intensity>` — whether `name` is actually
+/// generic, and what `type_args` are valid for it, is still `lux-typeck`'s
+/// call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAnnotation {
     pub name: String,
     pub span: Span,
+    pub type_args: Vec<TypeAnnotation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +122,7 @@ pub enum HirStatement {
     Expression(HirExprStatement),
     Assign(HirAssign),
     Transition(HirTransition),
+    BindSignal(HirBindSignal),
 }
 
 impl HirStatement {
@@ -127,6 +133,7 @@ impl HirStatement {
             HirStatement::Expression(s) => s.span,
             HirStatement::Assign(s) => s.span,
             HirStatement::Transition(s) => s.span,
+            HirStatement::BindSignal(s) => s.span,
         }
     }
 }
@@ -172,6 +179,20 @@ pub struct HirTransition {
     pub attribute_span: Span,
     pub value: HirExpr,
     pub duration: HirExpr,
+    pub span: Span,
+}
+
+/// `<target>.<attribute> <- <signal>;`, resolved. Same shape as
+/// [`HirAssign`]/[`HirTransition`]: `target` is a real [`TargetId`],
+/// `attribute_name` stays a raw name for `lux-typeck` to validate, and
+/// `signal` is the resolved expression expected to evaluate to
+/// `Signal<T>` where `T` matches the attribute.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBindSignal {
+    pub target: TargetId,
+    pub attribute_name: String,
+    pub attribute_span: Span,
+    pub signal: HirExpr,
     pub span: Span,
 }
 

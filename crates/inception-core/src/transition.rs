@@ -122,6 +122,29 @@ impl TransitionEngine {
         Ok(())
     }
 
+    /// Cancels any transition active on exactly this `(fixture, attribute)`
+    /// key, first sampling it at `now` and writing that value into `state`
+    /// so nothing is lost — a no-op if no transition is active there. Used
+    /// when a signal binding (`<-`) is about to take over control of the
+    /// attribute: the caller installs its own value into `state`
+    /// immediately afterward, so the value written here is only ever
+    /// momentarily visible, but this keeps the transition's own
+    /// bookkeeping (its `active` entry) consistent rather than just
+    /// discarding it silently.
+    pub fn cancel(
+        &mut self,
+        now: Timestamp,
+        fixture: FixtureId,
+        attribute: Attribute,
+        state: &mut LightingState,
+    ) -> Result<(), TransitionError> {
+        if let Some(transition) = self.active.remove(&(fixture, attribute)) {
+            let value = sample_value(transition, now)?;
+            state.set_fixture_attribute(fixture, value);
+        }
+        Ok(())
+    }
+
     /// Resolves all active overlays at `now` into `state`. Completed entries
     /// write their exact target value and are removed in-place.
     pub fn sample(

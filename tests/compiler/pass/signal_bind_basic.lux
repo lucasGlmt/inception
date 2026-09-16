@@ -1,0 +1,6 @@
+import std.Signal;
+
+scene main {
+    let level: Signal<Intensity> = Signal.constant(50%);
+    Washes.intensity <- level;
+}
