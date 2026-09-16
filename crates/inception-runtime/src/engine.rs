@@ -1,9 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use inception_core::{Clock, LightingState, Timestamp, TransitionEngine, UniverseId};
+use inception_core::{
+    AttributeValue, Clock, LightingState, Timestamp, TransitionEngine, UniverseId,
+};
 use inception_driver_dmx::DmxOutput;
 use inception_linker::RuntimeImage;
-use inception_renderer::{ResolvedRig, UniverseFrame};
+use inception_renderer::{ResolvedFixture, ResolvedRig, UniverseFrame};
 use inception_vm::{Vm, VmInitError};
 
 use crate::{OutputOperation, RuntimeError};
@@ -17,57 +19,162 @@ impl Clock for TickClock {
     }
 }
 
+/// All state owned by one linked build and replaced on reload.
 #[derive(Debug)]
-pub struct RuntimeEngine<O> {
+pub struct LoadedProgram {
     vm: Vm,
     lighting: LightingState,
     transitions: TransitionEngine,
     rig: ResolvedRig,
-    universes: Vec<UniverseId>,
-    frames: HashMap<UniverseId, UniverseFrame>,
-    output: O,
-    frames_sent: u64,
+    fixture_keys: Vec<String>,
 }
 
-impl<O: DmxOutput> RuntimeEngine<O> {
-    pub fn new(image: RuntimeImage, output: O) -> Result<Self, VmInitError> {
-        let universes = active_universes(&image.rig);
-        let frames = universes
-            .iter()
-            .copied()
-            .map(|universe| (universe, UniverseFrame::black()))
-            .collect();
+impl LoadedProgram {
+    pub fn new(image: RuntimeImage) -> Result<Self, VmInitError> {
         let lighting = image.lighting_state();
         Ok(Self {
             vm: Vm::new(image.bytecode)?,
             lighting,
             transitions: TransitionEngine::new(),
             rig: image.rig,
-            universes,
-            frames,
-            output,
-            frames_sent: 0,
+            fixture_keys: image.fixture_keys,
         })
     }
 
-    /// Starts the program and explicitly sends its initial rendered state.
-    pub fn start(&mut self, now: Timestamp) -> Result<(), RuntimeError<O::Error>> {
-        self.vm.start().map_err(RuntimeError::Vm)?;
-        self.tick(now)
+    fn start(&mut self) -> Result<(), inception_vm::VmError> {
+        self.vm.start()
     }
 
-    /// Executes one logical cycle at exactly `now`. The same timestamp is
-    /// supplied to the VM and transition sampler, so a cycle cannot observe
-    /// two subtly different instants.
-    pub fn tick(&mut self, now: Timestamp) -> Result<(), RuntimeError<O::Error>> {
+    fn advance(&mut self, now: Timestamp) -> Result<(), RuntimeError<std::convert::Infallible>> {
         self.vm
             .run_until_blocked(&TickClock(now), &mut self.lighting, &mut self.transitions)
             .map_err(RuntimeError::Vm)?;
         self.transitions
             .sample(now, &mut self.lighting)
-            .map_err(RuntimeError::Transition)?;
-        inception_renderer::render(&self.lighting, &self.rig, &mut self.frames);
+            .map_err(RuntimeError::Transition)
+    }
 
+    fn sample(&mut self, now: Timestamp) -> Result<(), inception_core::TransitionError> {
+        self.transitions.sample(now, &mut self.lighting)
+    }
+
+    fn fixture_by_key(&self) -> BTreeMap<String, ResolvedFixture> {
+        self.fixture_keys
+            .iter()
+            .zip(self.rig.fixtures.iter().copied())
+            .map(|(key, fixture)| (key.clone(), fixture))
+            .collect()
+    }
+
+    fn preserve_compatible_state_from(&mut self, old: &LoadedProgram) -> usize {
+        let old_fixtures = old.fixture_by_key();
+        let mut preserved = 0;
+        for (key, new_fixture) in self.fixture_by_key() {
+            let Some(old_fixture) = old_fixtures.get(&key).copied() else {
+                continue;
+            };
+            let mut compatible = false;
+            if old_fixture.intensity.is_some() && new_fixture.intensity.is_some() {
+                self.lighting.set_fixture_attribute(
+                    new_fixture.id,
+                    AttributeValue::Intensity(old.lighting.intensity(old_fixture.id)),
+                );
+                compatible = true;
+            }
+            if old_fixture.color.is_some() && new_fixture.color.is_some() {
+                self.lighting.set_fixture_attribute(
+                    new_fixture.id,
+                    AttributeValue::Color(old.lighting.color(old_fixture.id)),
+                );
+                compatible = true;
+            }
+            if compatible {
+                preserved += 1;
+            }
+        }
+        preserved
+    }
+
+    pub fn active_transition_count(&self) -> usize {
+        self.transitions.active_count()
+    }
+
+    pub fn lighting_state(&self) -> &LightingState {
+        &self.lighting
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadReport {
+    pub preserved_fixtures: usize,
+}
+
+/// Long-lived owner of the output connection and counters. Only its
+/// `LoadedProgram` is replaced by a hot reload.
+#[derive(Debug)]
+pub struct RuntimeHost<O> {
+    program: LoadedProgram,
+    output: O,
+    universes: BTreeSet<UniverseId>,
+    frames: HashMap<UniverseId, UniverseFrame>,
+    frames_sent: u64,
+}
+
+/// Backwards-compatible name for the original runtime API.
+pub type RuntimeEngine<O> = RuntimeHost<O>;
+
+impl<O: DmxOutput> RuntimeHost<O> {
+    pub fn new(image: RuntimeImage, output: O) -> Result<Self, VmInitError> {
+        Ok(Self::from_program(LoadedProgram::new(image)?, output))
+    }
+
+    pub fn from_program(program: LoadedProgram, output: O) -> Self {
+        let universes = active_universes(&program.rig).into_iter().collect();
+        Self {
+            program,
+            output,
+            universes,
+            frames: HashMap::new(),
+            frames_sent: 0,
+        }
+    }
+
+    pub fn start(&mut self, now: Timestamp) -> Result<(), RuntimeError<O::Error>> {
+        self.program.start().map_err(RuntimeError::Vm)?;
+        self.tick(now)
+    }
+
+    pub fn tick(&mut self, now: Timestamp) -> Result<(), RuntimeError<O::Error>> {
+        self.program.advance(now).map_err(|error| match error {
+            RuntimeError::Vm(error) => RuntimeError::Vm(error),
+            RuntimeError::Transition(error) => RuntimeError::Transition(error),
+            RuntimeError::DmxOutput { source, .. } => match source {},
+        })?;
+        self.render_and_send()
+    }
+
+    /// Candidate construction and validation occur before this short swap.
+    /// The old effective state is sampled at `now`; compatible fixtures are
+    /// copied by stable patch name, while VM frames and transitions reset.
+    pub fn reload(
+        &mut self,
+        mut candidate: LoadedProgram,
+        now: Timestamp,
+    ) -> Result<ReloadReport, RuntimeError<O::Error>> {
+        candidate.start().map_err(RuntimeError::Vm)?;
+        self.program.sample(now).map_err(RuntimeError::Transition)?;
+        let preserved_fixtures = candidate.preserve_compatible_state_from(&self.program);
+        self.universes.extend(active_universes(&candidate.rig));
+        self.program = candidate;
+        Ok(ReloadReport { preserved_fixtures })
+    }
+
+    fn render_and_send(&mut self) -> Result<(), RuntimeError<O::Error>> {
+        // Black first so removed fixtures/channels cannot retain stale DMX.
+        for &universe in &self.universes {
+            self.frames.insert(universe, UniverseFrame::black());
+        }
+        inception_renderer::render(&self.program.lighting, &self.program.rig, &mut self.frames);
         for &universe in &self.universes {
             self.output
                 .send(universe, &self.frames[&universe])
@@ -80,23 +187,23 @@ impl<O: DmxOutput> RuntimeEngine<O> {
         Ok(())
     }
 
-    /// Sends one final blackout per active universe, then closes the output.
-    /// Closing is attempted even when a blackout write fails.
-    pub fn stop(&mut self) -> Result<(), RuntimeError<O::Error>> {
+    /// Immediate blackout without closing the long-lived driver.
+    pub fn blackout(&mut self) -> Result<(), RuntimeError<O::Error>> {
         let black = UniverseFrame::black();
-        let mut send_error = None;
         for &universe in &self.universes {
-            if let Err(source) = self.output.send(universe, &black) {
-                if send_error.is_none() {
-                    send_error = Some(RuntimeError::DmxOutput {
-                        operation: OutputOperation::Blackout(universe),
-                        source,
-                    });
-                }
-            } else {
-                self.frames_sent = self.frames_sent.saturating_add(1);
-            }
+            self.output
+                .send(universe, &black)
+                .map_err(|source| RuntimeError::DmxOutput {
+                    operation: OutputOperation::Blackout(universe),
+                    source,
+                })?;
+            self.frames_sent = self.frames_sent.saturating_add(1);
         }
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<(), RuntimeError<O::Error>> {
+        let blackout_result = self.blackout();
         let close_result = self
             .output
             .close()
@@ -104,10 +211,7 @@ impl<O: DmxOutput> RuntimeEngine<O> {
                 operation: OutputOperation::Close,
                 source,
             });
-        match (send_error, close_result) {
-            (Some(error), _) => Err(error),
-            (None, result) => result,
-        }
+        blackout_result.and(close_result)
     }
 
     pub fn output(&self) -> &O {
@@ -127,11 +231,15 @@ impl<O: DmxOutput> RuntimeEngine<O> {
     }
 
     pub fn active_transition_count(&self) -> usize {
-        self.transitions.active_count()
+        self.program.active_transition_count()
     }
 
-    pub fn universes(&self) -> &[UniverseId] {
-        &self.universes
+    pub fn universes(&self) -> Vec<UniverseId> {
+        self.universes.iter().copied().collect()
+    }
+
+    pub fn program(&self) -> &LoadedProgram {
+        &self.program
     }
 }
 

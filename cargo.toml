@@ -8,6 +8,7 @@ members = [
     "crates/lux-mir",
     "crates/lux-bytecode",
     "crates/lux-compiler",
+    "crates/lux-project",
 
     "crates/inception-core",
     "crates/inception-vm",
@@ -36,6 +37,7 @@ lux-typeck = { path = "crates/lux-typeck" }
 lux-mir = { path = "crates/lux-mir" }
 lux-bytecode = { path = "crates/lux-bytecode" }
 lux-compiler = { path = "crates/lux-compiler" }
+lux-project = { path = "crates/lux-project" }
 
 inception-core = { path = "crates/inception-core" }
 inception-vm = { path = "crates/inception-vm" }

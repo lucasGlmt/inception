@@ -237,6 +237,10 @@ pub struct RuntimeImage {
     pub bytecode: BytecodeModule,
     pub targets: Vec<ResolvedTarget>,
     pub rig: ResolvedRig,
+    /// Stable, build-time fixture identities aligned with `rig.fixtures`.
+    /// Runtime fixture IDs may be reassigned by a relink, so hot reload uses
+    /// these patch names outside the render hot path when migrating state.
+    pub fixture_keys: Vec<String>,
 }
 
 impl RuntimeImage {
@@ -469,6 +473,11 @@ pub fn link(
             bytecode: program.clone(),
             targets,
             rig: resolved_patch.resolved_rig(),
+            fixture_keys: resolved_patch
+                .fixtures
+                .iter()
+                .map(|fixture| fixture.debug_name.clone())
+                .collect(),
         })
     } else {
         Err(errors)

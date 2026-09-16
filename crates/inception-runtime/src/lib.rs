@@ -11,7 +11,7 @@ mod runtime_loop;
 mod scheduler;
 
 pub use config::{RuntimeConfig, RuntimeConfigError};
-pub use engine::RuntimeEngine;
+pub use engine::{LoadedProgram, ReloadReport, RuntimeEngine, RuntimeHost};
 pub use error::{OutputOperation, RuntimeError, RuntimeLoopError};
 pub use runtime_loop::{RuntimeLoop, Sleeper, StdSleeper};
 pub use scheduler::{FrameDeadline, FrameScheduler, RuntimeTimingStats};

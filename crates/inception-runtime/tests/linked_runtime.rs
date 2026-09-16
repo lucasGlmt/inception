@@ -9,7 +9,7 @@ use inception_linker::{
 use inception_runtime::{RuntimeConfig, RuntimeEngine, RuntimeLoop, Sleeper};
 
 fn linked_image(fixtures: &[(String, UniverseId, u16)]) -> RuntimeImage {
-    let program = lux_compiler::compile_portable(
+    linked_image_for(
         r#"
         rig contract DemoRig {
             role Washes: Group<Intensity>;
@@ -18,8 +18,12 @@ fn linked_image(fixtures: &[(String, UniverseId, u16)]) -> RuntimeImage {
             Washes.intensity -> 100% over 2s;
         }
         "#,
+        fixtures,
     )
-    .unwrap();
+}
+
+fn linked_image_for(source: &str, fixtures: &[(String, UniverseId, u16)]) -> RuntimeImage {
+    let program = lux_compiler::compile_portable(source).unwrap();
 
     let definition = FixtureDefinition::new(
         "Dimmer",
@@ -48,6 +52,29 @@ fn linked_image(fixtures: &[(String, UniverseId, u16)]) -> RuntimeImage {
         }],
     };
     link(&program, &library, &patch, &rig).unwrap()
+}
+
+fn immediate_source(percent: u8) -> String {
+    format!(
+        r#"
+        rig contract DemoRig {{
+            role Washes: Group<Intensity>;
+        }}
+        scene main {{
+            Washes.intensity = {percent}%;
+        }}
+        "#
+    )
+}
+
+fn passive_source() -> &'static str {
+    r#"
+    rig contract DemoRig {
+        role Washes: Group<Intensity>;
+    }
+    scene main {
+    }
+    "#
 }
 
 #[test]
@@ -187,4 +214,132 @@ fn one_virtual_hour_finishes_transitions_without_recording_growth() {
 
     assert_eq!(engine.frames_sent(), 144_001);
     assert_eq!(engine.active_transition_count(), 0);
+}
+
+#[test]
+fn successful_reload_reuses_output_and_replaces_program() {
+    let fixtures = [("wash".into(), UniverseId(1), 1)];
+    let image_a = linked_image_for(&immediate_source(20), &fixtures);
+    let image_b = linked_image_for(&immediate_source(80), &fixtures);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    let sends_before = host.output().history().len();
+
+    host.reload(
+        inception_runtime::LoadedProgram::new(image_b).unwrap(),
+        Timestamp::from_millis(25),
+    )
+    .unwrap();
+    host.tick(Timestamp::from_millis(25)).unwrap();
+
+    assert_eq!(sends_before, 1);
+    assert_eq!(host.output().history().len(), 2);
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 205);
+}
+
+#[test]
+fn failed_compile_never_replaces_the_running_program() {
+    let fixtures = [("wash".into(), UniverseId(1), 1)];
+    let image_a = linked_image_for(&immediate_source(20), &fixtures);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+
+    let invalid = r#"
+        rig contract DemoRig { role Washes: Group<Intensity>; }
+        scene main { Washes.intensity = red; }
+    "#;
+    assert!(lux_compiler::compile_portable(invalid).is_err());
+    host.tick(Timestamp::from_millis(25)).unwrap();
+
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 51);
+    assert_eq!(host.output().history().len(), 2);
+}
+
+#[test]
+fn failed_link_never_replaces_the_running_program() {
+    let fixtures = [("wash".into(), UniverseId(1), 1)];
+    let image_a = linked_image_for(&immediate_source(20), &fixtures);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+
+    let program = lux_compiler::compile_portable(&immediate_source(80)).unwrap();
+    let definition = FixtureDefinition::new(
+        "Dimmer",
+        1,
+        CapabilitySet::from_capabilities([Capability::Intensity]),
+        FixtureMappings {
+            intensity: Some(0),
+            color: None,
+        },
+    )
+    .unwrap();
+    let mut library = FixtureLibrary::new();
+    library.insert(definition);
+    let mut patch = Patch::new("Venue");
+    patch
+        .add_fixture("wash", "Dimmer", UniverseId(1), 1)
+        .unwrap();
+    let invalid_rig = RigBinding {
+        name: "VenueRig".into(),
+        contract: "DemoRig".into(),
+        bindings: Vec::new(),
+    };
+    assert!(link(&program, &library, &patch, &invalid_rig).is_err());
+    host.tick(Timestamp::from_millis(25)).unwrap();
+
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 51);
+    assert_eq!(host.output().history().len(), 2);
+}
+
+#[test]
+fn reload_samples_transition_and_clears_it_while_preserving_effective_value() {
+    let fixtures = [("wash".into(), UniverseId(1), 1)];
+    let transitioning = r#"
+        rig contract DemoRig { role Washes: Group<Intensity>; }
+        scene main { Washes.intensity -> 100% over 10s; }
+    "#;
+    let image_a = linked_image_for(transitioning, &fixtures);
+    let image_b = linked_image_for(passive_source(), &fixtures);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    host.tick(Timestamp::from_secs(4)).unwrap();
+
+    let report = host
+        .reload(
+            inception_runtime::LoadedProgram::new(image_b).unwrap(),
+            Timestamp::from_secs(4),
+        )
+        .unwrap();
+    host.tick(Timestamp::from_secs(4)).unwrap();
+
+    assert_eq!(report.preserved_fixtures, 1);
+    assert_eq!(host.active_transition_count(), 0);
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 102);
+}
+
+#[test]
+fn state_preservation_uses_stable_names_not_reassigned_fixture_ids() {
+    let fixtures_a = [
+        ("stable".into(), UniverseId(1), 1),
+        ("removed".into(), UniverseId(1), 2),
+    ];
+    let fixtures_b = [
+        ("new".into(), UniverseId(1), 3),
+        ("stable".into(), UniverseId(1), 1),
+    ];
+    let image_a = linked_image_for(&immediate_source(73), &fixtures_a);
+    let image_b = linked_image_for(passive_source(), &fixtures_b);
+    let mut host = RuntimeEngine::new(image_a, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    host.reload(
+        inception_runtime::LoadedProgram::new(image_b).unwrap(),
+        Timestamp::from_millis(25),
+    )
+    .unwrap();
+    host.tick(Timestamp::from_millis(25)).unwrap();
+
+    let frame = host.output().last_frame(UniverseId(1)).unwrap();
+    assert_eq!(frame[0], 187); // stable fixture retained 73%
+    assert_eq!(frame[1], 0); // removed fixture was blacked
+    assert_eq!(frame[2], 0); // new fixture starts at its initial state
 }
