@@ -8,12 +8,11 @@ repository.workspace = true
 [dependencies]
 inception-core.workspace = true
 inception-renderer.workspace = true
+serialport = { version = "4", default-features = false }
 
 # Test-only: exercises the full virtual pipeline end to end (Lux source
-# through to a recorded DMX frame). This crate's own library code depends
-# on nothing but inception-core/inception-renderer — see AGENTS.md's
-# dependency direction — this is exactly why it's a dev-dependency rather
-# than a normal one.
+# through to a recorded DMX frame). Compiler/VM dependencies remain test-only;
+# serialport is the isolated transport dependency of the real output.
 [dev-dependencies]
 lux-compiler.workspace = true
 lux-bytecode.workspace = true

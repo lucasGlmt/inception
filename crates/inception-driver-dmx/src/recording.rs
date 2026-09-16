@@ -12,6 +12,7 @@ use crate::output::DmxOutput;
 #[derive(Debug, Clone, Default)]
 pub struct RecordingDmxOutput {
     frames: HashMap<UniverseId, UniverseFrame>,
+    history: Vec<(UniverseId, UniverseFrame)>,
 }
 
 impl RecordingDmxOutput {
@@ -23,6 +24,12 @@ impl RecordingDmxOutput {
     pub fn last_frame(&self, universe: UniverseId) -> Option<&UniverseFrame> {
         self.frames.get(&universe)
     }
+
+    /// Every send in call order. Intended for orchestration tests where the
+    /// stable order between universes matters.
+    pub fn history(&self) -> &[(UniverseId, UniverseFrame)] {
+        &self.history
+    }
 }
 
 impl DmxOutput for RecordingDmxOutput {
@@ -30,6 +37,7 @@ impl DmxOutput for RecordingDmxOutput {
 
     fn send(&mut self, universe: UniverseId, frame: &UniverseFrame) -> Result<(), Self::Error> {
         self.frames.insert(universe, frame.clone());
+        self.history.push((universe, frame.clone()));
         Ok(())
     }
 }

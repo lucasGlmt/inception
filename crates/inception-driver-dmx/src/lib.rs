@@ -1,14 +1,18 @@
 //! DMX output drivers.
 //!
-//! Only virtual implementations exist here — see `AGENTS.md`'s "hors
-//! scope" and this crate's module docs. A real hardware driver (Enttec,
-//! Art-Net, sACN, ...) is a later, separate crate built against the same
-//! [`DmxOutput`] trait, once the fully virtual pipeline is validated.
+//! Virtual outputs plus a serial ENTTEC DMX USB Pro implementation. Drivers
+//! only see numeric universes and rendered frames; Lux/runtime concepts never
+//! cross this boundary.
 
+pub mod enttec;
 pub mod null;
 pub mod output;
 pub mod recording;
 
+pub use enttec::{
+    DmxTransport, EnttecDmxUsbPro, EnttecDmxUsbProConfig, RealDmxOutput, SerialTransport,
+    TransportError,
+};
 pub use null::NullDmxOutput;
 pub use output::DmxOutput;
 pub use recording::RecordingDmxOutput;
