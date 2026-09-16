@@ -12,11 +12,13 @@
 //!   against its real type instead of silently going unchecked — both
 //!   the out-of-range literal *and* a later `wait x;` should be reported.
 //!
-//! `check` takes `&HirFile` rather than `&mut HirFile`: type information
-//! belongs to `lux-typeck` alone (it's the single source of truth for
-//! what a type is, see [`crate::types`]), so it isn't written back onto
-//! HIR nodes owned by `lux-hir` — doing so would make `lux-hir` need to
-//! know about `lux-typeck`'s `Type`, upward through the dependency graph.
+//! `check` takes `&HirFile`: type information belongs to `lux-typeck`
+//! alone (it's the single source of truth for what a type is, see
+//! [`crate::types`]), so it isn't written back onto HIR nodes owned by
+//! `lux-hir` — doing so would make `lux-hir` need to know about
+//! `lux-typeck`'s `Type`, upward through the dependency graph. Instead,
+//! on success, `check` returns a [`TypedProgram`] carrying every local's
+//! resolved type, for `lux-mir` to consume.
 
 use std::collections::HashMap;
 
@@ -26,20 +28,48 @@ use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
 use crate::bounds::bound_for;
 use crate::error::TypeError;
+use crate::program::{TypedProgram, TypedScene};
+use crate::rules::{binary_op_symbol, binary_result_type, unary_result_type};
 use crate::types::Type;
 
 /// Type-checks every scene in `hir`. Returns every diagnostic collected
-/// (not just the first) when checking fails anywhere in the file.
-pub fn check(hir: &HirFile) -> Result<(), Vec<TypeError>> {
+/// (not just the first) when checking fails anywhere in the file; on
+/// success, returns every local's resolved type.
+pub fn check(hir: &HirFile) -> Result<TypedProgram, Vec<TypeError>> {
     let mut checker = Checker { errors: Vec::new() };
-    for scene in &hir.scenes {
-        checker.check_scene(scene);
+
+    let scene_locals: Vec<HashMap<LocalId, Type>> = hir
+        .scenes
+        .iter()
+        .map(|scene| checker.check_scene(scene))
+        .collect();
+
+    if !checker.errors.is_empty() {
+        return Err(checker.errors);
     }
-    if checker.errors.is_empty() {
-        Ok(())
-    } else {
-        Err(checker.errors)
-    }
+
+    // Every local is guaranteed present here: `infer` only ever returns
+    // `None` for a local reference after an error was already recorded
+    // for that local's own `let` (see `infer`'s `HirExpr::Local` arm), so
+    // an empty `errors` implies every `let` reached the `Some` arm of
+    // `check_let` and was inserted below.
+    let scenes = hir
+        .scenes
+        .iter()
+        .zip(scene_locals)
+        .map(|(scene, local_types)| {
+            let dense = (0..scene.locals.len() as u32)
+                .map(|i| {
+                    *local_types
+                        .get(&LocalId(i))
+                        .expect("internal invariant violated: every local should have a type when `check` reports no errors")
+                })
+                .collect();
+            TypedScene { local_types: dense }
+        })
+        .collect();
+
+    Ok(TypedProgram { scenes })
 }
 
 struct Checker {
@@ -47,11 +77,12 @@ struct Checker {
 }
 
 impl Checker {
-    fn check_scene(&mut self, scene: &HirScene) {
+    fn check_scene(&mut self, scene: &HirScene) -> HashMap<LocalId, Type> {
         let mut local_types: HashMap<LocalId, Type> = HashMap::new();
         for stmt in &scene.statements {
             self.check_statement(scene, &mut local_types, stmt);
         }
+        local_types
     }
 
     fn check_statement(
@@ -177,34 +208,16 @@ impl Checker {
     }
 
     fn check_unary(&mut self, op: UnaryOp, operand: Type, span: Span) -> Option<Type> {
-        match op {
-            UnaryOp::Neg => match operand {
-                Type::Int | Type::Float => Some(operand),
-                other => {
-                    self.errors
-                        .push(TypeError::new(format!("cannot negate `{other}`"), span));
-                    None
-                }
-            },
+        let result = unary_result_type(op, operand);
+        if result.is_none() {
+            self.errors
+                .push(TypeError::new(format!("cannot negate `{operand}`"), span));
         }
+        result
     }
 
     fn check_binary(&mut self, op: BinaryOp, lhs: Type, rhs: Type, span: Span) -> Option<Type> {
-        let result = match op {
-            BinaryOp::Add | BinaryOp::Sub => match (lhs, rhs) {
-                (Type::Int, Type::Int) => Some(Type::Int),
-                (Type::Float, Type::Float) => Some(Type::Float),
-                (Type::Duration, Type::Duration) => Some(Type::Duration),
-                (Type::Intensity, Type::Intensity) => Some(Type::Intensity),
-                _ => None,
-            },
-            BinaryOp::Mul | BinaryOp::Div => match (lhs, rhs) {
-                (Type::Int, Type::Int) => Some(Type::Int),
-                (Type::Float, Type::Float) => Some(Type::Float),
-                _ => None,
-            },
-        };
-
+        let result = binary_result_type(op, lhs, rhs);
         if result.is_none() {
             self.errors.push(TypeError::new(
                 format!(
@@ -215,14 +228,5 @@ impl Checker {
             ));
         }
         result
-    }
-}
-
-fn binary_op_symbol(op: BinaryOp) -> &'static str {
-    match op {
-        BinaryOp::Add => "+",
-        BinaryOp::Sub => "-",
-        BinaryOp::Mul => "*",
-        BinaryOp::Div => "/",
     }
 }

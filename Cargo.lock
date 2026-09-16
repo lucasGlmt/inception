@@ -42,7 +42,9 @@ version = "0.1.0"
 name = "lux-compiler"
 version = "0.1.0"
 dependencies = [
+ "lux-bytecode",
  "lux-hir",
+ "lux-mir",
  "lux-syntax",
  "lux-typeck",
 ]
@@ -61,6 +63,12 @@ version = "0.1.0"
 [[package]]
 name = "lux-mir"
 version = "0.1.0"
+dependencies = [
+ "lux-bytecode",
+ "lux-hir",
+ "lux-syntax",
+ "lux-typeck",
+]
 
 [[package]]
 name = "lux-syntax"

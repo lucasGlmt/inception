@@ -1,0 +1,139 @@
+//! Lowers checked HIR into MIR.
+//!
+//! # Precondition
+//!
+//! `hir` must already have passed [`lux_typeck::check`], and `typed` must
+//! be the [`lux_typeck::TypedProgram`] that call returned *for this same
+//! `hir`* — `lower` does not re-validate anything. Calling it on
+//! unchecked or mismatched HIR is a misuse of the API (undefined
+//! behavior in the sense of "may produce nonsense MIR or panic", not
+//! memory-unsafe) rather than something a Lux source file can trigger, so
+//! this is not a place that reports user-facing diagnostics: see
+//! `lux_typeck::infer::expr_type`'s docs for why panicking here is
+//! considered acceptable per `AGENTS.md`, item 24 of the task brief.
+
+use lux_hir::{HirExpr, HirFile, HirScene, HirStatement};
+use lux_syntax::ast::{BinaryOp, UnaryOp};
+use lux_typeck::{Type, TypedProgram};
+
+use crate::ids::{BlockId, FunctionId};
+use crate::mir::{
+    BasicBlock, MirConstant, MirFunction, MirInstruction, MirLocal, MirModule, Terminator,
+};
+use crate::values::lower_literal;
+
+/// The scene conventionally used as a program's entry point, mirroring a
+/// `fn main` convention. Not enforced anywhere upstream: a program with
+/// no scene named `main` is still valid, it just has no entry point
+/// (`MirModule::entry` is `None`).
+const ENTRY_SCENE_NAME: &str = "main";
+
+pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
+    let mut functions = Vec::with_capacity(hir.scenes.len());
+    let mut entry = None;
+
+    for (index, scene) in hir.scenes.iter().enumerate() {
+        let id = FunctionId(index as u32);
+        if scene.name == ENTRY_SCENE_NAME {
+            entry = Some(id);
+        }
+        functions.push(lower_scene(id, scene, &typed.scenes[index].local_types));
+    }
+
+    MirModule { functions, entry }
+}
+
+fn lower_scene(id: FunctionId, scene: &HirScene, local_types: &[Type]) -> MirFunction {
+    let locals = scene
+        .locals
+        .iter()
+        .zip(local_types)
+        .map(|(decl, &ty)| MirLocal {
+            id: decl.id,
+            name: decl.name.clone(),
+            ty,
+        })
+        .collect();
+
+    let mut instructions = Vec::new();
+    for stmt in &scene.statements {
+        lower_statement(stmt, local_types, &mut instructions);
+    }
+
+    let block = BasicBlock {
+        id: BlockId(0),
+        instructions,
+        terminator: Terminator::Return,
+    };
+
+    MirFunction {
+        id,
+        name: scene.name.clone(),
+        locals,
+        blocks: vec![block],
+    }
+}
+
+fn lower_statement(stmt: &HirStatement, local_types: &[Type], out: &mut Vec<MirInstruction>) {
+    match stmt {
+        HirStatement::Let(let_stmt) => {
+            lower_expr(&let_stmt.value, local_types, out);
+            out.push(MirInstruction::StoreLocal(let_stmt.local));
+        }
+        HirStatement::Wait(wait_stmt) => {
+            lower_expr(&wait_stmt.value, local_types, out);
+            out.push(MirInstruction::Wait);
+        }
+        HirStatement::Expression(expr_stmt) => {
+            lower_expr(&expr_stmt.value, local_types, out);
+            out.push(MirInstruction::Pop);
+        }
+    }
+}
+
+fn lower_expr(expr: &HirExpr, local_types: &[Type], out: &mut Vec<MirInstruction>) {
+    match expr {
+        HirExpr::Literal(lit, _) => out.push(MirInstruction::Const(lower_literal(*lit))),
+        HirExpr::Local(id, _) => out.push(MirInstruction::LoadLocal(*id)),
+        HirExpr::Unary { op, operand, .. } => lower_unary(*op, operand, local_types, out),
+        HirExpr::Binary { op, lhs, rhs, .. } => {
+            lower_expr(lhs, local_types, out);
+            lower_expr(rhs, local_types, out);
+            out.push(match op {
+                BinaryOp::Add => MirInstruction::Add,
+                BinaryOp::Sub => MirInstruction::Sub,
+                BinaryOp::Mul => MirInstruction::Mul,
+                BinaryOp::Div => MirInstruction::Div,
+            });
+        }
+    }
+}
+
+/// There is no dedicated `Neg` opcode in this instruction set (see
+/// `lux-bytecode`'s task brief, item 14): `-x` is desugared here into
+/// `0 - x`, which `lux_typeck::rules` already guarantees is well-typed
+/// whenever `Neg` on `x`'s type is (both are only ever valid for `Int`
+/// and `Float`).
+fn lower_unary(
+    op: UnaryOp,
+    operand: &HirExpr,
+    local_types: &[Type],
+    out: &mut Vec<MirInstruction>,
+) {
+    match op {
+        UnaryOp::Neg => {
+            let operand_ty = lux_typeck::expr_type(local_types, operand);
+            let zero = match operand_ty {
+                Type::Int => MirConstant::Int(0),
+                Type::Float => MirConstant::Float(0.0),
+                other => unreachable!(
+                    "lower_unary: `Neg` on `{other}` should have been rejected by lux_typeck::check \
+                     before MIR lowering ever runs"
+                ),
+            };
+            out.push(MirInstruction::Const(zero));
+            lower_expr(operand, local_types, out);
+            out.push(MirInstruction::Sub);
+        }
+    }
+}

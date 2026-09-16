@@ -1,7 +1,9 @@
 use crate::checker::check;
 use crate::error::TypeError;
+use crate::program::TypedProgram;
+use crate::types::Type;
 
-fn check_source(source: &str) -> Result<(), Vec<TypeError>> {
+fn check_source(source: &str) -> Result<TypedProgram, Vec<TypeError>> {
     let ast = lux_syntax::parse(source).expect("source should parse");
     let hir = lux_hir::lower(&ast).expect("source should resolve");
     check(&hir)
@@ -170,4 +172,49 @@ fn negating_a_color_is_rejected() {
 #[test]
 fn negative_int_literal_passes() {
     assert!(check_source("scene main { let x = -12; }").is_ok());
+}
+
+#[test]
+fn typed_program_records_local_types() {
+    let typed = check_source(
+        r#"
+        scene main {
+            let duration: Duration = 1s;
+            let intensity = 50%;
+        }
+        "#,
+    )
+    .expect("should type check");
+    assert_eq!(typed.scenes.len(), 1);
+    assert_eq!(
+        typed.scenes[0].local_types,
+        vec![Type::Duration, Type::Intensity]
+    );
+}
+
+#[test]
+fn expr_type_matches_literal_and_binary_inference() {
+    let ast = lux_syntax::parse(
+        r#"
+        scene main {
+            let a = 1s;
+            let b = 500ms;
+            let duration = a + b;
+        }
+        "#,
+    )
+    .expect("should parse");
+    let hir = lux_hir::lower(&ast).expect("should resolve");
+    let typed = check(&hir).expect("should type check");
+
+    let scene = &hir.scenes[0];
+    let local_types = &typed.scenes[0].local_types;
+
+    let lux_hir::HirStatement::Let(duration_let) = &scene.statements[2] else {
+        panic!("expected let statement");
+    };
+    assert_eq!(
+        crate::expr_type(local_types, &duration_let.value),
+        Type::Duration
+    );
 }

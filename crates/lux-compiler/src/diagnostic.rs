@@ -10,15 +10,34 @@ pub enum Stage {
     Syntax,
     Resolve,
     Type,
+    /// The compiler itself produced bytecode that failed its own
+    /// verifier — a compiler bug, not something the user's source can be
+    /// blamed for. See `lux_compiler::compile`.
+    Internal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub stage: Stage,
     pub message: String,
+    /// Not meaningful for `Stage::Internal`: there is no user source
+    /// location to blame for a compiler bug, so this is a zero-width span
+    /// at the start of the file.
     pub span: Span,
     pub help: Option<String>,
     pub secondary_span: Option<Span>,
+}
+
+impl Diagnostic {
+    pub(crate) fn internal(message: impl Into<String>) -> Diagnostic {
+        Diagnostic {
+            stage: Stage::Internal,
+            message: message.into(),
+            span: Span::at(0),
+            help: None,
+            secondary_span: None,
+        }
+    }
 }
 
 impl From<SyntaxError> for Diagnostic {
