@@ -743,3 +743,176 @@ fn signal_binding_then_transition_type_checks() {
     );
     assert!(result.is_ok(), "unexpected errors: {result:?}");
 }
+
+// --- std.Effects -----------------------------------------------------
+
+#[test]
+fn effects_sine_call_infers_signal_float() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn effects_explicit_signal_float_annotation_passes() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave: Signal<Float> = Effects.sine(2s);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+/// Item 33.
+#[test]
+fn effects_wrong_annotation_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave: Signal<Intensity> = Effects.sine(2s);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Signal<Float>`")
+    }));
+}
+
+/// Item 4: a non-`Duration` argument is rejected with a `Duration`
+/// diagnostic, for all four oscillators.
+#[test]
+fn effects_oscillators_require_a_duration_argument() {
+    for (call, found) in [
+        ("Effects.sine(50%)", "Intensity"),
+        ("Effects.triangle(red)", "Color"),
+        ("Effects.saw(90deg)", "Angle"),
+        ("Effects.square(1.5)", "Float"),
+    ] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave = {call};
+            }}
+            "#
+        );
+        let errors = check_source(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == format!("expected `Duration`, found `{found}`")),
+            "call {call} did not produce the expected diagnostic: {errors:?}"
+        );
+    }
+}
+
+/// Item 5: a literal `0s` period is rejected at compile time, for all
+/// four oscillators.
+#[test]
+fn effects_zero_literal_period_is_a_compile_time_error() {
+    for call in [
+        "Effects.sine(0s)",
+        "Effects.triangle(0s)",
+        "Effects.saw(0s)",
+        "Effects.square(0s)",
+    ] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave = {call};
+            }}
+            "#
+        );
+        let errors = check_source(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("period must be greater than zero")),
+            "call {call} did not produce the expected diagnostic: {errors:?}"
+        );
+    }
+}
+
+/// A non-zero literal period is fine, of course.
+#[test]
+fn effects_nonzero_literal_period_passes() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(500ms);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+/// Item 29: `Signal<Float>` can never bind directly to `Intensity` (or
+/// `Color`) — this is deliberate, see the task brief's ".range() is a
+/// future milestone" rationale.
+#[test]
+fn effects_signal_float_cannot_bind_to_intensity() {
+    let errors = check_source_with_targets(
+        r#"
+        import std.Effects;
+        scene main {
+            Washes.intensity <- Effects.sine(2s);
+        }
+        "#,
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Signal<Float>`")
+    }));
+}
+
+#[test]
+fn effects_signal_float_cannot_bind_to_color() {
+    let errors = check_source_with_targets(
+        r#"
+        import std.Effects;
+        scene main {
+            Washes.color <- Effects.saw(2s);
+        }
+        "#,
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Color>`, found `Signal<Float>`")
+    }));
+}
+
+/// All four oscillators are independently wired into the registry, not
+/// just `sine`.
+#[test]
+fn every_effects_oscillator_type_checks() {
+    for name in ["sine", "triangle", "saw", "square"] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave: Signal<Float> = Effects.{name}(1s);
+            }}
+            "#
+        );
+        let result = check_source(&source);
+        assert!(result.is_ok(), "{name}: unexpected errors: {result:?}");
+    }
+}

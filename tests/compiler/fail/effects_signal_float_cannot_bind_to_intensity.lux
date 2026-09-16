@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    Washes.intensity <- Effects.sine(2s);
+}

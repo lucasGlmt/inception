@@ -11,8 +11,8 @@ use lux_stdlib::ParamType;
 
 use crate::types::{SignalElement, Type};
 
-/// Total: every `Type` maps to *some* `ParamType`. `Bool`/`Duration`/
-/// `Frequency`/`Tempo` have no stdlib representation, so they map to
+/// Total: every `Type` maps to *some* `ParamType`. `Bool`/`Frequency`/
+/// `Tempo` have no stdlib representation, so they map to
 /// [`ParamType::Unsupported`] — a sentinel no real `Signature` parameter
 /// ever uses, guaranteeing such an argument can never accidentally match
 /// a real overload; it only ever produces a clean type-mismatch
@@ -20,6 +20,8 @@ use crate::types::{SignalElement, Type};
 /// same way: no stdlib function accepts a `Signal` argument in V1 (only
 /// `Signal.constant`'s *return* type is a signal), so passing one as an
 /// argument anywhere should behave exactly like passing a `Bool`.
+/// `Type::Duration` *is* representable (`ParamType::Duration`), first used
+/// by `std.Effects`'s oscillator `period` parameters.
 pub fn to_param_type(ty: Type) -> ParamType {
     match ty {
         Type::Int => ParamType::Int,
@@ -27,9 +29,8 @@ pub fn to_param_type(ty: Type) -> ParamType {
         Type::Angle => ParamType::Angle,
         Type::Intensity => ParamType::Intensity,
         Type::Color => ParamType::Color,
-        Type::Bool | Type::Duration | Type::Frequency | Type::Tempo | Type::Signal(_) => {
-            ParamType::Unsupported
-        }
+        Type::Duration => ParamType::Duration,
+        Type::Bool | Type::Frequency | Type::Tempo | Type::Signal(_) => ParamType::Unsupported,
     }
 }
 
@@ -43,6 +44,7 @@ pub fn from_param_type(ty: ParamType) -> Type {
         ParamType::Angle => Type::Angle,
         ParamType::Intensity => Type::Intensity,
         ParamType::Color => Type::Color,
+        ParamType::Duration => Type::Duration,
         ParamType::SignalInt => Type::Signal(SignalElement::Int),
         ParamType::SignalFloat => Type::Signal(SignalElement::Float),
         ParamType::SignalAngle => Type::Signal(SignalElement::Angle),
@@ -67,6 +69,7 @@ mod tests {
             Type::Angle,
             Type::Intensity,
             Type::Color,
+            Type::Duration,
         ] {
             assert_eq!(from_param_type(to_param_type(ty)), ty);
         }
@@ -96,7 +99,7 @@ mod tests {
 
     #[test]
     fn unrepresentable_types_map_to_unsupported() {
-        for ty in [Type::Bool, Type::Duration, Type::Frequency, Type::Tempo] {
+        for ty in [Type::Bool, Type::Frequency, Type::Tempo] {
             assert_eq!(to_param_type(ty), ParamType::Unsupported);
         }
     }

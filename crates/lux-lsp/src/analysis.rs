@@ -1175,6 +1175,7 @@ fn param_type_name(ty: lux_stdlib::ParamType) -> &'static str {
         lux_stdlib::ParamType::Angle => "Angle",
         lux_stdlib::ParamType::Intensity => "Intensity",
         lux_stdlib::ParamType::Color => "Color",
+        lux_stdlib::ParamType::Duration => "Duration",
         lux_stdlib::ParamType::SignalInt => "Signal<Int>",
         lux_stdlib::ParamType::SignalFloat => "Signal<Float>",
         lux_stdlib::ParamType::SignalAngle => "Signal<Angle>",
@@ -1588,7 +1589,7 @@ mod tests {
             .into_iter()
             .map(|item| item.label)
             .collect();
-        assert_eq!(labels, ["Math", "Color", "Signal"]);
+        assert_eq!(labels, ["Math", "Color", "Signal", "Effects"]);
     }
 
     #[test]
@@ -1685,6 +1686,90 @@ mod tests {
         let (analysis, position) = snapshot(&marked);
         let help = analysis.signature_help(position).unwrap();
         assert_eq!(help.signatures.len(), 5);
+    }
+
+    /// Item 42.
+    #[test]
+    fn import_completion_proposes_effects() {
+        let (analysis, position) = snapshot("import std.$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(labels.contains(&"Effects".to_string()));
+    }
+
+    /// Item 43.
+    #[test]
+    fn effects_module_member_completion_lists_all_four_oscillators() {
+        let (analysis, position) =
+            snapshot("import std.Effects;\nscene main { let x = Effects.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["sine", "triangle", "saw", "square"]);
+    }
+
+    /// Item 44.
+    #[test]
+    fn signature_help_on_effects_sine_shows_duration_to_signal_float() {
+        let source = "import std.Effects;\nscene main { let x = Effects.sine(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 1);
+        let SignatureInformation { label, .. } = &help.signatures[0];
+        assert!(label.contains("period: Duration"));
+        assert!(label.contains("Signal<Float>"));
+    }
+
+    /// Item 45.
+    #[test]
+    fn hover_on_effects_sine_shows_its_signature_and_description() {
+        let source = "import std.Effects;\nscene main { let x = Effects.sine(2s); }";
+        let pos = source.find("sine").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(
+            contents
+                .value
+                .contains("sine(period: Duration) -> Signal<Float>")
+        );
+        assert!(contents.value.to_lowercase().contains("sine"));
+    }
+
+    /// Item 46: a non-`Duration` argument is flagged immediately, without
+    /// save.
+    #[test]
+    fn effects_sine_wrong_argument_type_is_diagnosed_without_save() {
+        let (analysis, _) =
+            snapshot("import std.Effects;\nscene main { let x = Effects.sine(red); $0}");
+        let diagnostics = analysis.diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "expected `Duration`, found `Color`")
+        );
+    }
+
+    /// Item 80: every oscillator gets signature help and hover, not just
+    /// `sine`.
+    #[test]
+    fn every_effects_oscillator_has_signature_help() {
+        for name in ["sine", "triangle", "saw", "square"] {
+            let source = format!("import std.Effects;\nscene main {{ let x = Effects.{name}(");
+            let marked = format!("{source}$0");
+            let (analysis, position) = snapshot(&marked);
+            let help = analysis.signature_help(position);
+            assert!(help.is_some(), "{name} should offer signature help");
+        }
     }
 
     #[test]

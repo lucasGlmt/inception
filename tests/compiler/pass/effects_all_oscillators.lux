@@ -1,0 +1,8 @@
+import std.Effects;
+
+scene main {
+    let a: Signal<Float> = Effects.sine(2s);
+    let b: Signal<Float> = Effects.triangle(2s);
+    let c: Signal<Float> = Effects.saw(2s);
+    let d: Signal<Float> = Effects.square(2s);
+}

@@ -15,19 +15,22 @@
 //! match with no wildcard arm: adding a new intrinsic that this file
 //! doesn't yet implement is a compile error here, not a silent gap.
 //!
-//! The 5 `SignalConstant*` intrinsics are the one exception to "every
-//! function here is total": constructing a signal needs to insert into
-//! the executing `Vm`'s `crate::signal::SignalStore`, which this function
-//! has no access to (and shouldn't — every other intrinsic here is a pure
-//! computation over its arguments alone, and mixing in `Vm`-owned mutable
-//! state would break that for all of them). `Vm::exec_call_intrinsic`
-//! recognizes those 5 ids and handles them itself, the same way it
-//! already handles `SetAttribute`/`TransitionAttribute`/`Wait` outside
-//! this file for the same reason. They're still listed in the match below
-//! (each just `unreachable!()`) so this stays a real exhaustive match over
-//! `IntrinsicId` — a new intrinsic added to the enum without updating
-//! either this file or `Vm::exec_call_intrinsic` is still a compile error
-//! here, not a silent gap.
+//! The 5 `SignalConstant*` intrinsics, plus the 4 `Effects*` oscillator
+//! constructors, are the exception to "every function here is total":
+//! constructing a signal needs to insert into the executing `Vm`'s
+//! `crate::signal::SignalStore`, which this function has no access to
+//! (and shouldn't — every other intrinsic here is a pure computation over
+//! its arguments alone, and mixing in `Vm`-owned mutable state would
+//! break that for all of them). The `Effects*` constructors additionally
+//! need `clock.now()` for their oscillator's time origin — another thing
+//! this pure function has no access to. `Vm::exec_call_intrinsic`
+//! recognizes those 9 ids and handles them itself, the same way it
+//! already handles `SetAttribute`/`TransitionAttribute`/`Wait`/`BindSignal`
+//! outside this file for the same reason. They're still listed in the
+//! match below (each just `unreachable!()`) so this stays a real
+//! exhaustive match over `IntrinsicId` — a new intrinsic added to the
+//! enum without updating either this file or `Vm::exec_call_intrinsic` is
+//! still a compile error here, not a silent gap.
 
 use lux_bytecode::{ColorValue, IntrinsicId};
 
@@ -113,6 +116,15 @@ pub fn eval_intrinsic(intrinsic: IntrinsicId, args: &[Value]) -> Value {
             "eval_intrinsic: SignalConstant* intrinsics are handled by \
              Vm::exec_call_intrinsic directly, which needs mutable access to the \
              SignalStore this pure function doesn't have — see this module's doc"
+        ),
+
+        IntrinsicId::EffectsSine
+        | IntrinsicId::EffectsTriangle
+        | IntrinsicId::EffectsSaw
+        | IntrinsicId::EffectsSquare => unreachable!(
+            "eval_intrinsic: Effects* intrinsics are handled by Vm::exec_call_intrinsic \
+             directly, which needs mutable access to the SignalStore and the clock this \
+             pure function doesn't have — see this module's doc"
         ),
     }
 }

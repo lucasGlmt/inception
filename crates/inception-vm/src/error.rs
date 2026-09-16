@@ -88,4 +88,13 @@ pub enum VmErrorKind {
     /// same `Vm`'s own `SignalConstant*` handling), kept only for the
     /// same defensive reason every other `VmErrorKind` exists.
     UnknownSignal(crate::signal::SignalId),
+    /// An `Effects*` oscillator (`Sine`/`Triangle`/`Saw`/`Square`) was
+    /// constructed with a zero `period`. A *constant* zero period is
+    /// already rejected at compile time (see `lux-typeck`'s
+    /// `check_literal_constant_misuse`); this is the runtime backstop for
+    /// a non-constant `Duration` (e.g. a `let`-bound variable) that turns
+    /// out to be zero when the oscillator is actually constructed —
+    /// dividing by it would be a division by zero, so this is reported as
+    /// a structured error instead.
+    InvalidSignalPeriod,
 }

@@ -181,6 +181,96 @@ fn signal_constant_program_compiles_and_runs_to_completion() {
 }
 
 #[test]
+fn effects_sine_program_compiles_and_samples_the_documented_phase_table() {
+    // Item 66/78 of the `std.Effects` milestone's success criterion:
+    // `Effects.sine(2s)` compiled and executed through the full pipeline
+    // (parse -> HIR -> typecheck -> MIR -> bytecode -> verifier -> VM),
+    // then sampled directly off the VM's own `SignalStore`. There's no
+    // public API to read a `let` local's value back out of a finished
+    // VM's frame (see `signal_constant_program_compiles_and_runs_to_completion`
+    // above, which sidesteps the same limitation by not sampling at all)
+    // — this samples by `SignalId` instead, which is deterministic: the
+    // program's one `Effects.sine` call is always the first and only
+    // signal this `Vm` ever creates.
+    let source = r#"
+        import std.Effects;
+
+        scene main {
+            let wave: Signal<Float> = Effects.sine(2s);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("effects program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let id = inception_vm::SignalId(0);
+    for (millis, expected) in [(0, 0.5), (500, 1.0), (1000, 0.5), (1500, 0.0), (2000, 0.5)] {
+        let sampled = vm
+            .signals()
+            .sample(id, Timestamp::from_millis(millis))
+            .unwrap();
+        let inception_vm::Value::Float(v) = sampled else {
+            panic!("expected Float, got {sampled:?}");
+        };
+        assert!(
+            (v - expected).abs() < 1e-9,
+            "expected {expected} at {millis}ms, got {v}"
+        );
+    }
+}
+
+#[test]
+fn effects_oscillator_created_after_a_wait_starts_its_cycle_there() {
+    // Item 67: `wait 1s; let wave = Effects.sine(2s);` — the oscillator's
+    // origin must be the timestamp the VM actually executed the
+    // construction at (`t=1s`), not the runtime's own start (`t=0`).
+    let source = r#"
+        import std.Effects;
+
+        scene main {
+            wait 1s;
+            let wave = Effects.sine(2s);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("effects program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+
+    clock.advance(Duration::from_secs(1));
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let id = inception_vm::SignalId(0);
+    // Sampled exactly at its own origin (t=1s): elapsed=0, phase=0,
+    // sine=0.5 — never the value it would have had if it had (wrongly)
+    // started ticking from the runtime's own t=0.
+    let sampled = vm.signals().sample(id, Timestamp::from_secs(1)).unwrap();
+    let inception_vm::Value::Float(v) = sampled else {
+        panic!("expected Float, got {sampled:?}");
+    };
+    assert!((v - 0.5).abs() < 1e-9);
+}
+
+#[test]
 fn a_scene_with_no_wait_finishes_on_the_first_run() {
     let source = r#"
         scene main {

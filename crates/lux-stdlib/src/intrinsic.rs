@@ -31,4 +31,8 @@ pub enum IntrinsicId {
     SignalConstantAngle,
     SignalConstantIntensity,
     SignalConstantColor,
+    EffectsSine,
+    EffectsTriangle,
+    EffectsSaw,
+    EffectsSquare,
 }

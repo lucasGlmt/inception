@@ -41,6 +41,18 @@ pub enum IntrinsicId {
     SignalConstantAngle,
     SignalConstantIntensity,
     SignalConstantColor,
+    /// Constructs a `Signal<Float>` oscillator. All four monomorphized the
+    /// same way `SignalConstant*` is per element type — here the axis is
+    /// waveform, not element type, since every oscillator returns
+    /// `Signal<Float>`. Like `SignalConstant*`, dispatched specially by
+    /// `inception-vm`'s `Vm` rather than through `eval_intrinsic`: besides
+    /// inserting into `SignalStore`, construction also reads `clock.now()`
+    /// for the oscillator's origin — see `inception-vm`'s `signal` module
+    /// doc.
+    EffectsSine,
+    EffectsTriangle,
+    EffectsSaw,
+    EffectsSquare,
 }
 
 impl IntrinsicId {
@@ -65,6 +77,10 @@ impl IntrinsicId {
             IntrinsicId::SignalConstantAngle => &[Angle],
             IntrinsicId::SignalConstantIntensity => &[Intensity],
             IntrinsicId::SignalConstantColor => &[Color],
+            IntrinsicId::EffectsSine
+            | IntrinsicId::EffectsTriangle
+            | IntrinsicId::EffectsSaw
+            | IntrinsicId::EffectsSquare => &[Duration],
         }
     }
 
@@ -89,6 +105,10 @@ impl IntrinsicId {
             IntrinsicId::SignalConstantAngle => ValueType::Signal(ScalarValueType::Angle),
             IntrinsicId::SignalConstantIntensity => ValueType::Signal(ScalarValueType::Intensity),
             IntrinsicId::SignalConstantColor => ValueType::Signal(ScalarValueType::Color),
+            IntrinsicId::EffectsSine
+            | IntrinsicId::EffectsTriangle
+            | IntrinsicId::EffectsSaw
+            | IntrinsicId::EffectsSquare => ValueType::Signal(ScalarValueType::Float),
         }
     }
 }
@@ -119,8 +139,28 @@ mod tests {
             IntrinsicId::SignalConstantAngle,
             IntrinsicId::SignalConstantIntensity,
             IntrinsicId::SignalConstantColor,
+            IntrinsicId::EffectsSine,
+            IntrinsicId::EffectsTriangle,
+            IntrinsicId::EffectsSaw,
+            IntrinsicId::EffectsSquare,
         ] {
             assert!(!intrinsic.param_types().is_empty());
+        }
+    }
+
+    #[test]
+    fn effects_intrinsics_take_a_duration_and_return_signal_float() {
+        for intrinsic in [
+            IntrinsicId::EffectsSine,
+            IntrinsicId::EffectsTriangle,
+            IntrinsicId::EffectsSaw,
+            IntrinsicId::EffectsSquare,
+        ] {
+            assert_eq!(intrinsic.param_types(), &[ValueType::Duration]);
+            assert_eq!(
+                intrinsic.return_type(),
+                ValueType::Signal(crate::value::ScalarValueType::Float)
+            );
         }
     }
 

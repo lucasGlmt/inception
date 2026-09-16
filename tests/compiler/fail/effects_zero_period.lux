@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    let wave = Effects.sine(0s);
+}

@@ -492,6 +492,21 @@ impl Checker {
                     ));
                 }
             }
+            IntrinsicId::EffectsSine
+            | IntrinsicId::EffectsTriangle
+            | IntrinsicId::EffectsSaw
+            | IntrinsicId::EffectsSquare => {
+                if let [HirExpr::Literal(Literal::Duration(period), span)] = call.args.as_slice()
+                    && *period == 0
+                {
+                    self.errors.push(
+                        TypeError::new("oscillator period must be greater than zero", *span)
+                            .with_help(
+                                "a zero-period oscillator would divide by zero when sampled",
+                            ),
+                    );
+                }
+            }
             _ => {}
         }
     }

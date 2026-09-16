@@ -274,7 +274,69 @@ static SIGNAL: StdModule = StdModule {
           V1 only supports `Signal.constant`, a signal whose value never depends on time.",
 };
 
-pub static STD_MODULES: &[StdModule] = &[MATH, COLOR, SIGNAL];
+static EFFECTS_SINE: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "sine",
+    params: &[param!("period": Duration)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::EffectsSine,
+    pure: false,
+    doc: "sine(period: Duration) -> Signal<Float> — a sine-wave oscillator normalized to `0.0..1.0`: \
+          `phase 0.00 -> 0.5, 0.25 -> 1.0, 0.50 -> 0.5, 0.75 -> 0.0`. `period` must be greater than zero. \
+          The oscillator's origin (`phase == 0`) is the timestamp it was created at.",
+};
+
+static EFFECTS_TRIANGLE: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "triangle",
+    params: &[param!("period": Duration)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::EffectsTriangle,
+    pure: false,
+    doc: "triangle(period: Duration) -> Signal<Float> — a triangle-wave oscillator normalized to `0.0..1.0`: \
+          `phase 0.00 -> 0.0, 0.25 -> 0.5, 0.50 -> 1.0, 0.75 -> 0.5`. `period` must be greater than zero. \
+          The oscillator's origin (`phase == 0`) is the timestamp it was created at.",
+};
+
+static EFFECTS_SAW: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "saw",
+    params: &[param!("period": Duration)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::EffectsSaw,
+    pure: false,
+    doc: "saw(period: Duration) -> Signal<Float> — a rising sawtooth oscillator normalized to `0.0..1.0`: \
+          `phase 0.00 -> 0.0, 0.25 -> 0.25, 0.50 -> 0.5, 0.75 -> 0.75`, then it snaps back to `0.0`. \
+          `period` must be greater than zero. The oscillator's origin (`phase == 0`) is the timestamp \
+          it was created at. There is no falling/descending variant in V1.",
+};
+
+static EFFECTS_SQUARE: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "square",
+    params: &[param!("period": Duration)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::EffectsSquare,
+    pure: false,
+    doc: "square(period: Duration) -> Signal<Float> — a 50% duty-cycle square-wave oscillator: \
+          `1.0` for the first half of each period, `0.0` for the second half. `period` must be \
+          greater than zero. The oscillator's origin (`phase == 0`) is the timestamp it was created at.",
+};
+
+static EFFECTS_FUNCTIONS: &[Signature] =
+    &[EFFECTS_SINE, EFFECTS_TRIANGLE, EFFECTS_SAW, EFFECTS_SQUARE];
+
+static EFFECTS: StdModule = StdModule {
+    path: &["std", "Effects"],
+    short_name: "Effects",
+    functions: EFFECTS_FUNCTIONS,
+    doc: "Time-varying oscillators: each function returns a `Signal<Float>` normalized to `0.0..1.0`, \
+          whose value depends only on absolute time — never on a frame count or tick delta. Unlike \
+          `std.Math`/`std.Color`, these are not pure functions of their arguments alone: each call \
+          captures the current runtime clock as the oscillator's time origin.",
+};
+
+pub static STD_MODULES: &[StdModule] = &[MATH, COLOR, SIGNAL, EFFECTS];
 
 pub fn find_module(path: &[&str]) -> Option<&'static StdModule> {
     STD_MODULES.iter().find(|m| m.path == path)
@@ -475,7 +537,7 @@ mod tests {
 
     #[test]
     fn color_and_math_signatures_are_pure() {
-        for module in STD_MODULES {
+        for module in [&MATH, &COLOR, &SIGNAL] {
             for sig in module.functions {
                 assert!(
                     sig.pure,
@@ -483,6 +545,37 @@ mod tests {
                     module.short_name, sig.name
                 );
             }
+        }
+    }
+
+    /// `std.Effects` is the deliberate exception: each oscillator captures
+    /// `clock.now()` as its time origin at construction, so two calls to
+    /// the exact same expression at different times produce signals that
+    /// sample differently — see `Signature::pure`'s docs.
+    #[test]
+    fn effects_signatures_are_deliberately_impure() {
+        for sig in EFFECTS_FUNCTIONS {
+            assert!(
+                !sig.pure,
+                "{}.{} reads the clock and must not be marked pure",
+                EFFECTS.short_name, sig.name
+            );
+        }
+    }
+
+    #[test]
+    fn effects_module_exposes_all_four_oscillators() {
+        let names: Vec<_> = EFFECTS_FUNCTIONS.iter().map(|s| s.name).collect();
+        assert_eq!(names, ["sine", "triangle", "saw", "square"]);
+        for sig in EFFECTS_FUNCTIONS {
+            assert_eq!(
+                sig.params,
+                &[Param {
+                    name: "period",
+                    ty: ParamType::Duration
+                }]
+            );
+            assert_eq!(sig.return_ty, ParamType::SignalFloat);
         }
     }
 }

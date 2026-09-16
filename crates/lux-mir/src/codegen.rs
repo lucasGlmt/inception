@@ -259,6 +259,10 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::SignalConstantAngle => B::SignalConstantAngle,
         S::SignalConstantIntensity => B::SignalConstantIntensity,
         S::SignalConstantColor => B::SignalConstantColor,
+        S::EffectsSine => B::EffectsSine,
+        S::EffectsTriangle => B::EffectsTriangle,
+        S::EffectsSaw => B::EffectsSaw,
+        S::EffectsSquare => B::EffectsSquare,
     }
 }
 

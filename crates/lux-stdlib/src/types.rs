@@ -14,6 +14,13 @@ pub enum ParamType {
     Angle,
     Intensity,
     Color,
+    /// A time span — first used as a parameter type by `std.Effects`'s
+    /// oscillators (`sine(period: Duration) -> Signal<Float>`, ...).
+    /// `Signal.constant` never needed this: it's the first stdlib
+    /// function to take a `Duration` argument, not the first to be able
+    /// to represent one — `lux_typeck::Type::Duration` already existed
+    /// (for `wait`), it just had no stdlib-facing counterpart before now.
+    Duration,
     /// `Signal<T>` for each of the 5 `T`s above — only ever used as a
     /// `Signature::return_ty` in V1 (`Signal.constant`'s return type),
     /// never as a `Param::ty`: no stdlib function accepts a signal

@@ -274,7 +274,7 @@ impl Vm {
             Instruction::CallIntrinsic {
                 intrinsic,
                 arg_count,
-            } => self.exec_call_intrinsic(function_id, pc, intrinsic, arg_count),
+            } => self.exec_call_intrinsic(function_id, pc, intrinsic, arg_count, clock),
             Instruction::Return => Ok(self.exec_return()),
             Instruction::Pop => self.exec_pop(function_id, pc),
             Instruction::SetAttribute { target, attribute } => {
@@ -630,19 +630,24 @@ impl Vm {
     /// `lux_bytecode::verify`), evaluates the intrinsic, and pushes its
     /// one result.
     ///
-    /// The 5 `SignalConstant*` intrinsics are handled here directly
-    /// instead of through `eval_intrinsic`: they need to insert into
-    /// `self.signals`, `Vm`-owned mutable state `eval_intrinsic` doesn't
-    /// have access to (see that function's module doc). Every other
-    /// intrinsic still goes through `eval_intrinsic`, which stays total —
-    /// there is no error path for those, matching every other
-    /// "deterministic runtime, no panics" operation in this VM.
-    fn exec_call_intrinsic(
+    /// The 5 `SignalConstant*` intrinsics and the 4 `Effects*` oscillator
+    /// constructors are handled here directly instead of through
+    /// `eval_intrinsic`: they need to insert into `self.signals`,
+    /// `Vm`-owned mutable state `eval_intrinsic` doesn't have access to
+    /// (see that function's module doc); the `Effects*` constructors also
+    /// need `clock.now()` for the oscillator's time origin — legitimate
+    /// here even though sampling itself never reads a clock (see
+    /// `crate::signal`'s module doc). Every other intrinsic still goes
+    /// through `eval_intrinsic`, which stays total — there is no error
+    /// path for those, matching every other "deterministic runtime, no
+    /// panics" operation in this VM.
+    fn exec_call_intrinsic<C: Clock>(
         &mut self,
         function: FunctionId,
         pc: usize,
         intrinsic: lux_bytecode::IntrinsicId,
         arg_count: u8,
+        clock: &C,
     ) -> Result<Step, VmError> {
         let mut args = Vec::with_capacity(arg_count as usize);
         for _ in 0..arg_count {
@@ -655,6 +660,21 @@ impl Vm {
         if let Some(elem) = signal_element_of(intrinsic) {
             let id = self.signals.insert(SignalKind::Constant(args[0]));
             self.stack.push(Value::Signal(elem, id));
+            return Ok(Step::Continue);
+        }
+
+        if let Some(build) = effects_signal_kind(intrinsic) {
+            let Value::Duration(period) = args[0] else {
+                unreachable!(
+                    "exec_call_intrinsic: Effects* operand type already checked by the verifier"
+                );
+            };
+            if period == inception_core::Duration::ZERO {
+                return Err(VmError::new(function, pc, VmErrorKind::InvalidSignalPeriod));
+            }
+            let id = self.signals.insert(build(period, clock.now()));
+            self.stack
+                .push(Value::Signal(lux_bytecode::ScalarValueType::Float, id));
             return Ok(Step::Continue);
         }
 
@@ -675,6 +695,32 @@ fn signal_element_of(
         IntrinsicId::SignalConstantAngle => Some(ScalarValueType::Angle),
         IntrinsicId::SignalConstantIntensity => Some(ScalarValueType::Intensity),
         IntrinsicId::SignalConstantColor => Some(ScalarValueType::Color),
+        _ => None,
+    }
+}
+
+/// The `SignalKind` constructor an `Effects*` intrinsic builds, or `None`
+/// for every other (non-oscillator-producing) intrinsic. Returned as a
+/// plain function pointer rather than inlining the four cases directly
+/// into `exec_call_intrinsic`, so the zero-period check and the
+/// `SignalStore::insert` call stay written exactly once.
+fn effects_signal_kind(
+    intrinsic: lux_bytecode::IntrinsicId,
+) -> Option<fn(inception_core::Duration, inception_core::Timestamp) -> SignalKind> {
+    use lux_bytecode::IntrinsicId;
+    match intrinsic {
+        IntrinsicId::EffectsSine => {
+            Some(|period, started_at| SignalKind::Sine { period, started_at })
+        }
+        IntrinsicId::EffectsTriangle => {
+            Some(|period, started_at| SignalKind::Triangle { period, started_at })
+        }
+        IntrinsicId::EffectsSaw => {
+            Some(|period, started_at| SignalKind::Saw { period, started_at })
+        }
+        IntrinsicId::EffectsSquare => {
+            Some(|period, started_at| SignalKind::Square { period, started_at })
+        }
         _ => None,
     }
 }

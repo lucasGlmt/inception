@@ -12,6 +12,7 @@ use lux_bytecode::{
 };
 
 use crate::error::{VmErrorKind, VmInitError};
+use crate::signal::SignalId;
 use crate::state::VmState;
 use crate::value::Value;
 use crate::vm::Vm;
@@ -967,4 +968,294 @@ fn a_signal_can_be_shared_across_multiple_targets() {
     let expected = inception_core::Intensity::new(25000);
     assert_eq!(lighting.intensity(front), expected);
     assert_eq!(lighting.intensity(back), expected);
+}
+
+fn assert_float_close(actual: Value, expected: f64) {
+    match actual {
+        Value::Float(v) => assert!((v - expected).abs() < 1e-9, "expected {expected}, got {v}"),
+        other => panic!("expected Float, got {other:?}"),
+    }
+}
+
+/// Item 66/78: `CONST Duration(2s); CALL_INTRINSIC EffectsSine(1);` pushes
+/// a sampleable `Signal<Float>` matching the documented phase table,
+/// exactly the way `call_intrinsic_signal_constant_pushes_a_sampleable_signal`
+/// already does for `Signal.constant`.
+#[test]
+fn call_intrinsic_effects_sine_pushes_a_sampleable_oscillator_signal() {
+    let module = module_with(
+        vec![
+            Constant::Duration(2_000_000_000),
+            Constant::Duration(1_000_000_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSine,
+                    arg_count: 1,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::Wait,
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            2,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+
+    let &[Value::Signal(elem, id)] = vm.stack() else {
+        panic!(
+            "expected exactly one Signal value on the stack, got {:?}",
+            vm.stack()
+        );
+    };
+    assert_eq!(elem, lux_bytecode::ScalarValueType::Float);
+
+    for (millis, expected) in [(0, 0.5), (500, 1.0), (1000, 0.5), (1500, 0.0), (2000, 0.5)] {
+        assert_float_close(
+            vm.signals()
+                .sample(id, Timestamp::from_millis(millis))
+                .unwrap(),
+            expected,
+        );
+    }
+}
+
+/// Item 26/27/58: the VM uses `clock.now()` *at construction time* as the
+/// oscillator's origin — driven with a `VirtualClock` already advanced to
+/// `5s` before the intrinsic runs.
+#[test]
+fn effects_oscillator_origin_is_the_clock_time_at_construction() {
+    let module = module_with(
+        vec![Constant::Duration(2_000_000_000)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSaw,
+                    arg_count: 1,
+                },
+                Instruction::StoreLocal(LocalId(0)),
+                Instruction::Return,
+            ],
+            vec![ValueType::Signal(lux_bytecode::ScalarValueType::Float)],
+            1,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    clock.advance(CoreDuration::from_secs(5));
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    // Can't read the local back off a finished VM's frame directly, so
+    // instead verify indirectly: construct the same oscillator through a
+    // second VM at `t=0` and confirm the two origins disagree by sampling
+    // both at `t=5s`. Using `saw` (`value == phase` exactly) makes the
+    // origin difference unambiguous: the `t=5s`-origin one has just
+    // started (phase 0), while the `t=0`-origin one is 5s into a 2s
+    // period — `5s mod 2s == 1s`, phase 0.5.
+    let module_at_zero = module_with(
+        vec![Constant::Duration(2_000_000_000)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSaw,
+                    arg_count: 1,
+                },
+                Instruction::StoreLocal(LocalId(0)),
+                Instruction::Return,
+            ],
+            vec![ValueType::Signal(lux_bytecode::ScalarValueType::Float)],
+            1,
+        )],
+    );
+    let mut vm_at_zero = started(module_at_zero);
+    let clock_zero = VirtualClock::new();
+    let mut lighting2 = LightingState::new();
+    let mut transitions2 = TransitionEngine::new();
+    vm_at_zero
+        .run_until_blocked(&clock_zero, &mut lighting2, &mut transitions2)
+        .unwrap();
+
+    // Both signals are gone from the stack (StoreLocal popped them), but
+    // both VMs allocated `SignalId(0)` for their one signal — sample each
+    // store directly.
+    assert_float_close(
+        vm.signals()
+            .sample(SignalId(0), Timestamp::from_secs(5))
+            .unwrap(),
+        0.0,
+    );
+    assert_float_close(
+        vm_at_zero
+            .signals()
+            .sample(SignalId(0), Timestamp::from_secs(5))
+            .unwrap(),
+        0.5,
+    );
+}
+
+/// Item 34: two separate `Effects.saw(2s)` calls, separated by a
+/// `wait 1s`, get different origins — sampled at the *same* absolute
+/// timestamp, they disagree.
+#[test]
+fn separate_oscillator_calls_get_independent_origins() {
+    let module = module_with(
+        vec![
+            Constant::Duration(2_000_000_000),
+            Constant::Duration(1_000_000_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSaw,
+                    arg_count: 1,
+                },
+                Instruction::Pop,
+                Instruction::Const(ConstantId(1)),
+                Instruction::Wait,
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSaw,
+                    arg_count: 1,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            1,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    // Runs up to the WAIT: signal 0 (`SignalId(0)`) was created at t=0.
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+
+    clock.advance(CoreDuration::from_secs(1));
+    // Resumes and creates signal 1 (`SignalId(1)`) at t=1s.
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    // Sampled at the same absolute t=1s: the first signal (origin 0) is
+    // half a period (1s of 2s) in — phase 0.5 — while the second
+    // (origin 1s) has just started — phase 0.
+    assert_float_close(
+        vm.signals()
+            .sample(SignalId(0), Timestamp::from_secs(1))
+            .unwrap(),
+        0.5,
+    );
+    assert_float_close(
+        vm.signals()
+            .sample(SignalId(1), Timestamp::from_secs(1))
+            .unwrap(),
+        0.0,
+    );
+}
+
+/// Items 5/63/64: a non-constant `Duration` that turns out to be zero at
+/// construction time is a structured runtime error, never a panic or a
+/// silent division by zero. This bytecode never goes through
+/// `lux-typeck` (which would reject a *literal* `0s` at compile time —
+/// see `lux-typeck`'s `check_literal_constant_misuse` test), so it
+/// exercises the VM's own defensive check.
+#[test]
+fn effects_zero_period_is_a_structured_runtime_error() {
+    let module = module_with(
+        vec![Constant::Duration(0)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSine,
+                    arg_count: 1,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            1,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    let err = vm
+        .run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap_err();
+    assert_eq!(err.kind, VmErrorKind::InvalidSignalPeriod);
+    assert!(vm.is_faulted());
+}
+
+/// Items 12/13/14: `triangle`/`saw`/`square` are independently wired
+/// through `CALL_INTRINSIC`, not just `sine`.
+#[test]
+fn every_oscillator_intrinsic_constructs_a_sampleable_signal() {
+    use lux_bytecode::IntrinsicId;
+
+    let cases = [
+        (IntrinsicId::EffectsTriangle, 0.0),
+        (IntrinsicId::EffectsSaw, 0.0),
+        (IntrinsicId::EffectsSquare, 1.0),
+    ];
+    for (intrinsic, expected_at_zero) in cases {
+        let module = module_with(
+            vec![Constant::Duration(2_000_000_000)],
+            vec![function(
+                0,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::CallIntrinsic {
+                        intrinsic,
+                        arg_count: 1,
+                    },
+                    Instruction::Pop,
+                    Instruction::Return,
+                ],
+                vec![],
+                1,
+            )],
+        );
+        let mut vm = started(module);
+        let clock = VirtualClock::new();
+        let mut lighting = LightingState::new();
+        let mut transitions = TransitionEngine::new();
+        vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+            .unwrap();
+        assert!(vm.is_finished());
+        assert_float_close(
+            vm.signals().sample(SignalId(0), Timestamp::ZERO).unwrap(),
+            expected_at_zero,
+        );
+    }
 }

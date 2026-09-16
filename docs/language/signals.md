@@ -193,18 +193,39 @@ reloaded (the old bindings are sampled one last time, then dropped —
 same as transitions); or the runtime itself shuts down. There is no
 other garbage collection.
 
+## Time-varying signals: `std.Effects`
+
+`Signal.constant` isn't the only way to build a signal anymore:
+`std.Effects` adds four oscillators — `sine`, `triangle`, `saw`,
+`square` — each `(period: Duration) -> Signal<Float>`. See
+`docs/stdlib/Effects.md` for the full reference and phase tables.
+
+```lux
+import std.Effects;
+
+scene main {
+    let wave: Signal<Float> = Effects.sine(2s);
+}
+```
+
+Notably, `<-` needed **no changes at all** to support this: it was
+already written against `SignalId`/`sample(now)` alone, never against
+`Signal.constant` specifically, so a new signal kind is purely additive
+— see `docs/rfcs/0004-effects-oscillators.md`'s "architectural impact"
+section.
+
+Every oscillator returns `Signal<Float>`, not `Signal<Intensity>` or any
+other lighting-domain type — so, for now, this remains invalid:
+
+```lux
+Front.intensity <- Effects.sine(2s); // error: expected Signal<Intensity>, found Signal<Float>
+```
+
+A future `.range(min, max)` will be the way to turn a `Signal<Float>`
+into an attribute-ready signal; see `docs/stdlib/Effects.md`.
+
 ## What's not here yet
 
-This milestone wires signals into a running show, but keeps the signal
-vocabulary itself minimal:
-
-- There are no time-varying signal kinds — no `sine`, `triangle`, `saw`,
-  or any oscillator. `Signal.constant` is deliberately the only
-  constructor, so this milestone can validate the binding architecture
-  before anything more interesting is layered on top. Adding, say,
-  `SignalKind::Sine` later should not require any change to `<-` itself
-  or to how bindings are sampled — only a new way to *construct* a
-  signal.
 - There's no way to combine or transform signals (no `map`, no `.range()`,
   no `.phase()`, no arithmetic on a `Signal<T>`).
 - There's no per-fixture "spread": every fixture a binding reaches
