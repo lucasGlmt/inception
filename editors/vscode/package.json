@@ -26,7 +26,7 @@
         "lux.server.path": {
           "type": "string",
           "default": "",
-          "description": "Explicit path to the lux-lsp executable. Empty uses PATH, then target/debug/lux-lsp in the workspace."
+          "description": "Explicit path to the lux-lsp executable. Empty uses the LUX_LSP_PATH environment variable, then target/debug/lux-lsp walked up from the workspace, then PATH."
         },
         "lux.trace.server": {
           "type": "string",

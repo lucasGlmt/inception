@@ -16,6 +16,11 @@ function serverCommand(): string {
     return configured;
   }
 
+  const fromEnv = process.env.LUX_LSP_PATH?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     let directory = folder.uri.fsPath;
     for (;;) {

@@ -6,6 +6,9 @@
     "request": "launch",
     "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
     "outFiles": ["${workspaceFolder}/out/**/*.js"],
-    "preLaunchTask": "npm: compile"
+    "preLaunchTask": "npm: compile",
+    "env": {
+      "LUX_LSP_PATH": "${workspaceFolder}/../../target/debug/lux-lsp"
+    }
   }]
 }
