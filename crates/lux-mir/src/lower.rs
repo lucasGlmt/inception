@@ -166,6 +166,21 @@ fn lower_expr(expr: &HirExpr, local_types: &[Type], out: &mut Vec<MirInstruction
                 BinaryOp::Div => MirInstruction::Div,
             });
         }
+        HirExpr::Call(call) => {
+            for arg in &call.args {
+                lower_expr(arg, local_types, out);
+            }
+            // Trusted re-derivation, not re-validation — same precondition
+            // as `lower_unary`'s use of `lux_typeck::expr_type` above: by
+            // the time MIR lowering runs, `lux_typeck::check` has already
+            // resolved this exact overload once, deterministically, from
+            // the same argument types.
+            let sig = lux_typeck::infer::resolve_call(local_types, call);
+            out.push(MirInstruction::CallIntrinsic {
+                intrinsic: sig.intrinsic,
+                arg_count: call.args.len() as u8,
+            });
+        }
     }
 }
 

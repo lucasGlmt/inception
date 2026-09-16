@@ -77,6 +77,16 @@ fn write_instruction(out: &mut String, module: &BytecodeModule, instruction: Ins
         Instruction::Call(id) => {
             let _ = write!(out, "{:<11} #{}", "CALL", id.0);
         }
+        Instruction::CallIntrinsic {
+            intrinsic,
+            arg_count,
+        } => {
+            let _ = write!(
+                out,
+                "{:<11} {intrinsic:?} argc={arg_count}",
+                "CALL_INTRINSIC"
+            );
+        }
         Instruction::Return => {
             let _ = write!(out, "RETURN");
         }

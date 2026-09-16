@@ -19,6 +19,7 @@ pub mod expected;
 pub mod infer;
 pub mod program;
 pub mod rules;
+pub mod stdlib_bridge;
 pub mod types;
 
 #[cfg(test)]

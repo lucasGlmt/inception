@@ -14,12 +14,18 @@ pub struct ProjectWatcher {
     _watcher: RecommendedWatcher,
     receiver: Receiver<notify::Result<Event>>,
     paths: ProjectPaths,
+    /// Every user-module file (`import show.Helpers;`) the current build
+    /// transitively resolved — watched exactly like `paths.entry`, so
+    /// editing one triggers the same debounce/rebuild path. Populated
+    /// only *after* a successful build (see `BuiltProject::user_module_paths`),
+    /// same as `paths` itself.
+    user_modules: Vec<PathBuf>,
     pending: BTreeSet<PathBuf>,
     deadline: Option<Instant>,
 }
 
 impl ProjectWatcher {
-    pub fn new(paths: ProjectPaths) -> notify::Result<Self> {
+    pub fn new(paths: ProjectPaths, user_modules: Vec<PathBuf>) -> notify::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);
@@ -29,6 +35,7 @@ impl ProjectWatcher {
             _watcher: watcher,
             receiver,
             paths,
+            user_modules,
             pending: BTreeSet::new(),
             deadline: None,
         })
@@ -42,7 +49,7 @@ impl ProjectWatcher {
                 Ok(Ok(event)) => {
                     let mut relevant = false;
                     for path in event.paths {
-                        if is_relevant(&self.paths, &path) {
+                        if is_relevant(&self.paths, &self.user_modules, &path) {
                             self.pending.insert(path);
                             relevant = true;
                         }
@@ -70,18 +77,20 @@ impl ProjectWatcher {
     /// Updates the configured path filter after a valid manifest reload. The
     /// OS watcher already observes the whole project root, so no handle needs
     /// to be torn down or recreated.
-    pub fn update_paths(&mut self, paths: ProjectPaths) {
+    pub fn update_paths(&mut self, paths: ProjectPaths, user_modules: Vec<PathBuf>) {
         debug_assert_eq!(self.paths.root, paths.root);
         self.paths = paths;
+        self.user_modules = user_modules;
     }
 }
 
-pub fn is_relevant(paths: &ProjectPaths, path: &Path) -> bool {
+pub fn is_relevant(paths: &ProjectPaths, user_modules: &[PathBuf], path: &Path) -> bool {
     path == paths.manifest
         || path == paths.entry
         || path == paths.patch
         || path == paths.bindings
         || path.starts_with(&paths.fixtures)
+        || user_modules.iter().any(|module| path == module)
         || (path.starts_with(paths.root.join("src"))
             && path.extension().is_some_and(|extension| extension == "lux"))
 }
@@ -114,6 +123,34 @@ impl DebounceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_paths(root: PathBuf) -> ProjectPaths {
+        ProjectPaths {
+            root: root.clone(),
+            manifest: root.join("lux.toml"),
+            entry: root.join("src/main.lux"),
+            patch: root.join("rig/patch.lux"),
+            bindings: root.join("rig/rig.lux"),
+            fixtures: root.join("fixtures"),
+        }
+    }
+
+    #[test]
+    fn a_resolved_user_module_file_is_relevant() {
+        let root = PathBuf::from("/project");
+        let paths = dummy_paths(root.clone());
+        let user_modules = vec![root.join("show/Helpers.lux")];
+        assert!(is_relevant(
+            &paths,
+            &user_modules,
+            &root.join("show/Helpers.lux")
+        ));
+        assert!(!is_relevant(
+            &paths,
+            &user_modules,
+            &root.join("show/Other.lux")
+        ));
+    }
 
     #[test]
     fn five_editor_events_coalesce_into_one_rebuild() {

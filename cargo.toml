@@ -3,6 +3,7 @@ resolver = "3"
 
 members = [
     "crates/lux-syntax",
+    "crates/lux-stdlib",
     "crates/lux-hir",
     "crates/lux-typeck",
     "crates/lux-mir",
@@ -32,6 +33,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 lux-syntax = { path = "crates/lux-syntax" }
+lux-stdlib = { path = "crates/lux-stdlib" }
 lux-hir = { path = "crates/lux-hir" }
 lux-typeck = { path = "crates/lux-typeck" }
 lux-mir = { path = "crates/lux-mir" }

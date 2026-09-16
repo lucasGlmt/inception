@@ -89,7 +89,8 @@ fn check_command(watch: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let running = install_interrupt_handler()?;
-    let mut watcher = ProjectWatcher::new(built.project.paths.clone())?;
+    let mut watcher =
+        ProjectWatcher::new(built.project.paths.clone(), built.user_module_paths.clone())?;
     println!("Watching project...");
     while running.load(Ordering::Relaxed) {
         if let Some(paths) = watcher.poll(Instant::now())? {
@@ -97,7 +98,10 @@ fn check_command(watch: bool) -> Result<(), Box<dyn Error>> {
             println!("→ checking");
             match load_and_build(&manifest) {
                 Ok(candidate) => {
-                    watcher.update_paths(candidate.project.paths.clone());
+                    watcher.update_paths(
+                        candidate.project.paths.clone(),
+                        candidate.user_module_paths.clone(),
+                    );
                     built = candidate;
                     println!("✓ valid ({} ms)", built.timings.total.as_millis());
                 }
@@ -143,7 +147,8 @@ fn dev_command(output_override: Option<String>) -> Result<(), Box<dyn Error>> {
     println!("Watching project...");
     println!("Commands: b + Enter blackout, s + Enter status, r + Enter reload, q + Enter quit");
 
-    let mut watcher = ProjectWatcher::new(built.project.paths.clone())?;
+    let mut watcher =
+        ProjectWatcher::new(built.project.paths.clone(), built.user_module_paths.clone())?;
     let (request_sender, result_receiver) = spawn_build_worker(manifest_path.clone());
     let command_receiver = spawn_stdin_commands();
     let running = install_interrupt_handler()?;
@@ -187,11 +192,12 @@ fn dev_command(output_override: Option<String>) -> Result<(), Box<dyn Error>> {
                             let link_ms = candidate.timings.link.as_millis();
                             let total_ms = candidate.timings.total.as_millis();
                             let candidate_paths = candidate.project.paths.clone();
+                            let candidate_user_modules = candidate.user_module_paths.clone();
                             let loaded = LoadedProgram::new(candidate.image).map_err(|error| {
                                 format!("runtime candidate validation failed: {error:?}")
                             })?;
                             let report = host.reload(loaded, runtime_loop.clock().now())?;
-                            watcher.update_paths(candidate_paths);
+                            watcher.update_paths(candidate_paths, candidate_user_modules);
                             build_id += 1;
                             println!("✓ compile ({compile_ms} ms)");
                             println!("✓ link ({link_ms} ms)");

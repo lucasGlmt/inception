@@ -2,7 +2,10 @@
 //!
 //! The compiler remains content-in/content-out. This crate owns project
 //! discovery, typed configuration, path resolution, and loading before it
-//! invokes the shared compiler and linker APIs.
+//! invokes the shared compiler and linker APIs. It's also the only crate
+//! that resolves `import`s to real files on disk and builds the resulting
+//! module dependency graph (see [`module_graph`]) — `lux-hir`/
+//! `lux-typeck`/`lux-compiler` never touch the filesystem themselves.
 
 use std::fmt;
 use std::fs;
@@ -16,6 +19,10 @@ use inception_linker::{
 };
 use lux_compiler::Diagnostic;
 use serde::Deserialize;
+
+pub mod module_graph;
+
+pub use module_graph::ModuleGraph;
 
 pub const MANIFEST_FILE: &str = "lux.toml";
 
@@ -146,6 +153,12 @@ pub struct BuiltProject {
     pub project: LuxProject,
     pub image: RuntimeImage,
     pub timings: BuildTimings,
+    /// Every user-module file this build's entry transitively imports
+    /// (never `std.*`, which has no file) — what `lux-cli`'s file watcher
+    /// additionally watches so editing one triggers the same hot-reload
+    /// path as editing the entry file. Empty for a project with no
+    /// `import`s.
+    pub user_module_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -170,6 +183,10 @@ pub enum ProjectError {
         errors: Vec<FixtureDefinitionError>,
     },
     Link(Vec<LinkError>),
+    /// `import` forms a cycle across user-module files — the full cycle,
+    /// in the order discovered, first and last entries being the same
+    /// file. See `module_graph`'s docs.
+    ImportCycle(Vec<PathBuf>),
 }
 
 impl fmt::Display for ProjectError {
@@ -205,6 +222,15 @@ impl fmt::Display for ProjectError {
                 path.display()
             ),
             Self::Link(errors) => write!(f, "link failed: {errors:?}"),
+            Self::ImportCycle(cycle) => write!(
+                f,
+                "import cycle: {}",
+                cycle
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            ),
         }
     }
 }
@@ -261,9 +287,20 @@ impl LuxProject {
 
     pub fn build(&self) -> Result<BuiltProject, ProjectError> {
         let total_started = Instant::now();
-        let source = read_to_string(&self.paths.entry)?;
+
+        let base_dir = self
+            .paths
+            .entry
+            .parent()
+            .unwrap_or(&self.paths.root)
+            .to_path_buf();
+        let graph = module_graph::build(&self.paths.entry, &base_dir)?;
+
         let compile_started = Instant::now();
-        let bytecode = lux_compiler::compile_portable(&source).map_err(ProjectError::Compile)?;
+        let sources = to_program_sources(&graph);
+        let bytecode =
+            lux_compiler::compile_program(&sources, &lux_compiler::TargetEnvironment::new())
+                .map_err(ProjectError::Compile)?;
         let compile = compile_started.elapsed();
 
         let library = load_fixture_library(&self.paths.fixtures)?;
@@ -280,7 +317,27 @@ impl LuxProject {
                 link,
                 total: total_started.elapsed(),
             },
+            user_module_paths: graph.other_files().map(|(path, _)| path.clone()).collect(),
         })
+    }
+}
+
+fn to_program_sources(graph: &ModuleGraph) -> lux_compiler::ProgramSources {
+    let entry_file = graph.entry_file();
+    lux_compiler::ProgramSources {
+        entry: lux_compiler::SourceUnit {
+            path: Some(graph.entry.clone()),
+            source: entry_file.source.clone(),
+            user_module_paths: entry_file.user_module_paths.clone(),
+        },
+        modules: graph
+            .other_files()
+            .map(|(path, file)| lux_compiler::SourceUnit {
+                path: Some(path.clone()),
+                source: file.source.clone(),
+                user_module_paths: file.user_module_paths.clone(),
+            })
+            .collect(),
     }
 }
 

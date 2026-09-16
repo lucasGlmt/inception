@@ -7,6 +7,7 @@ edition = "2024"
 lux-compiler.workspace = true
 lux-hir.workspace = true
 lux-project.workspace = true
+lux-stdlib.workspace = true
 lux-syntax.workspace = true
 lux-typeck.workspace = true
 serde_json = "1"

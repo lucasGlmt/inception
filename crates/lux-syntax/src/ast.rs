@@ -31,6 +31,16 @@ pub struct SourceFile {
 pub enum Item {
     Scene(SceneDecl),
     RigContract(RigContractDecl),
+    Import(ImportDecl),
+}
+
+/// `import std.Math;` — a module import. `path` holds every dotted
+/// segment (`[std, Math]`); no wildcards (`std.Math.*`) and no aliasing
+/// exist in this milestone, so a bare dotted path is the entire surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub path: Vec<Identifier>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -222,9 +232,20 @@ pub struct BinaryExpr {
     pub span: Span,
 }
 
+/// The callee of a call expression: either a bare name (`foo(...)`, always
+/// unresolved in this milestone — Lux has no user-defined functions yet) or
+/// a module-qualified name (`Math.sin(...)`), resolved against the calling
+/// file's imports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallPath {
+    pub qualifier: Option<Identifier>,
+    pub name: Identifier,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallExpr {
-    pub callee: Identifier,
+    pub callee: CallPath,
     pub args: Vec<Expression>,
     pub span: Span,
 }

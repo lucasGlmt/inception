@@ -1,0 +1,9 @@
+import std.Math;
+import std.Color;
+
+scene main {
+    let wave_point = Math.sin(90deg);
+    let orange = Color.rgb(255, 120, 20);
+
+    Washes.color = orange;
+}

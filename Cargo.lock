@@ -579,6 +579,7 @@ dependencies = [
 name = "lux-hir"
 version = "0.1.0"
 dependencies = [
+ "lux-stdlib",
  "lux-syntax",
 ]
 
@@ -589,6 +590,7 @@ dependencies = [
  "lux-compiler",
  "lux-hir",
  "lux-project",
+ "lux-stdlib",
  "lux-syntax",
  "lux-typeck",
  "serde_json",
@@ -604,6 +606,7 @@ version = "0.1.0"
 dependencies = [
  "lux-bytecode",
  "lux-hir",
+ "lux-stdlib",
  "lux-syntax",
  "lux-typeck",
 ]
@@ -615,10 +618,15 @@ dependencies = [
  "inception-core",
  "inception-linker",
  "lux-compiler",
+ "lux-syntax",
  "serde",
  "tempfile",
  "toml",
 ]
+
+[[package]]
+name = "lux-stdlib"
+version = "0.1.0"
 
 [[package]]
 name = "lux-syntax"
@@ -629,6 +637,7 @@ name = "lux-typeck"
 version = "0.1.0"
 dependencies = [
  "lux-hir",
+ "lux-stdlib",
  "lux-syntax",
 ]
 

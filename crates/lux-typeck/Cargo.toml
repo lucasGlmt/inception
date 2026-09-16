@@ -8,3 +8,4 @@ repository.workspace = true
 [dependencies]
 lux-syntax.workspace = true
 lux-hir.workspace = true
+lux-stdlib.workspace = true

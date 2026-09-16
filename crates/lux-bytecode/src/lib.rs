@@ -10,6 +10,7 @@ pub mod attribute;
 pub mod disasm;
 pub mod ids;
 pub mod instruction;
+pub mod intrinsic;
 pub mod module;
 pub mod role;
 pub mod value;
@@ -22,6 +23,7 @@ pub use attribute::Attribute;
 pub use disasm::disassemble;
 pub use ids::{ConstantId, FunctionId, LocalId, TargetId};
 pub use instruction::Instruction;
+pub use intrinsic::IntrinsicId;
 pub use module::{BytecodeModule, BytecodeVersion, Function};
 pub use role::{
     Capability, CapabilitySet, PortableRigContract, PortableRole, RoleCardinality, RoleId,

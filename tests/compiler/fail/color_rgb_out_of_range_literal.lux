@@ -1,0 +1,5 @@
+import std.Color;
+
+scene main {
+    let x = Color.rgb(255, 300, 0);
+}

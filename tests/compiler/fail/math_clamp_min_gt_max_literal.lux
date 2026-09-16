@@ -1,0 +1,5 @@
+import std.Math;
+
+scene main {
+    let x = Math.clamp(1, 5, 2);
+}

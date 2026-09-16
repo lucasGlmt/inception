@@ -7,6 +7,7 @@ edition = "2024"
 inception-core.workspace = true
 inception-linker.workspace = true
 lux-compiler.workspace = true
+lux-syntax.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 

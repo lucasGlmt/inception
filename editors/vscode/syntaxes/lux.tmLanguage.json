@@ -11,7 +11,7 @@
   ],
   "repository": {
     "comments": { "patterns": [{ "name": "comment.line.double-slash.lux", "match": "//.*$" }] },
-    "keywords": { "patterns": [{ "name": "keyword.control.lux", "match": "\\b(scene|rig|contract|role|let|mut|wait|over|Group)\\b" }] },
+    "keywords": { "patterns": [{ "name": "keyword.control.lux", "match": "\\b(scene|rig|contract|role|let|mut|wait|over|Group|import)\\b" }] },
     "types": { "patterns": [{ "name": "storage.type.lux", "match": "\\b(Bool|Int|Float|Duration|Intensity|Color|Angle|Frequency|Tempo)\\b" }] },
     "colors": { "patterns": [{ "name": "constant.language.color.lux", "match": "\\b(red|green|blue|white|black|true|false)\\b|#[0-9a-fA-F]{6}\\b" }] },
     "numbers": { "patterns": [{ "name": "constant.numeric.lux", "match": "\\b[0-9]+(?:\\.[0-9]+)?(?:ms|s|%|deg|Hz|bpm)?\\b" }] }

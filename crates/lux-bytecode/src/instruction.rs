@@ -8,6 +8,7 @@
 
 use crate::attribute::Attribute;
 use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
+use crate::intrinsic::IntrinsicId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
@@ -32,6 +33,21 @@ pub enum Instruction {
     /// generates it (see `lux-mir`) — it exists so the opcode doesn't
     /// need to be redesigned once user-defined functions exist.
     Call(FunctionId),
+
+    /// Calls one builtin stdlib intrinsic (`std.Math`, `std.Color`, ...),
+    /// dispatched purely by `intrinsic` — never by name/string. One
+    /// opcode for every intrinsic rather than one per function: adding a
+    /// new stdlib function later never needs a new opcode, only a new
+    /// `IntrinsicId` variant. `arg_count` is redundant with
+    /// `intrinsic.param_types().len()` (the verifier checks the two
+    /// agree, see `verify.rs`) but is carried explicitly so the VM can
+    /// pop its operands generically, without its own per-intrinsic arity
+    /// table. Net stack effect is `1 - arg_count` (every intrinsic
+    /// returns exactly one value).
+    CallIntrinsic {
+        intrinsic: IntrinsicId,
+        arg_count: u8,
+    },
 
     /// Ends the current function. The stack must be empty at this point
     /// (Lux scenes don't return a value in this milestone).

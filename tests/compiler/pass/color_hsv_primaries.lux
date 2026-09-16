@@ -1,0 +1,7 @@
+import std.Color;
+
+scene main {
+    let hsv_red = Color.hsv(0deg, 100%, 100%);
+    let hsv_green = Color.hsv(120deg, 100%, 100%);
+    let hsv_blue = Color.hsv(240deg, 100%, 100%);
+}

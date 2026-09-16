@@ -1,0 +1,7 @@
+import std.Color;
+
+scene main {
+    let lower_bound = Color.rgb(0, 0, 0);
+    let upper_bound = Color.rgb(255, 255, 255);
+    let orange = Color.rgb(255, 120, 20);
+}

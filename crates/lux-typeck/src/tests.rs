@@ -362,3 +362,146 @@ fn role_rejects_attribute_not_declared_by_its_contract() {
             .contains("role does not provide required capability `Color`")
     }));
 }
+
+#[test]
+fn math_sin_call_is_well_typed() {
+    let result = check_source("import std.Math; scene main { let x: Float = Math.sin(90deg); }");
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn color_rgb_call_is_well_typed() {
+    let result =
+        check_source("import std.Color; scene main { let x: Color = Color.rgb(255, 120, 20); }");
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn math_abs_resolves_int_and_float_overloads() {
+    let result = check_source(
+        r#"
+        import std.Math;
+        scene main {
+            let a: Int = Math.abs(-5);
+            let b: Float = Math.abs(-2.5);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn math_sin_rejects_color_argument() {
+    let errors =
+        check_source("import std.Math; scene main { let x = Math.sin(red); }").unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Angle`, found `Color`"))
+    );
+}
+
+#[test]
+fn color_rgb_rejects_wrong_argument_type() {
+    let errors = check_source("import std.Color; scene main { let x = Color.rgb(255, 0, 2s); }")
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Int`, found `Duration`"))
+    );
+}
+
+#[test]
+fn math_clamp_rejects_mismatched_overload() {
+    let errors = check_source("import std.Math; scene main { let x = Math.clamp(1.0, red, 5.0); }")
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("no matching overload of `Math.clamp`"))
+    );
+}
+
+#[test]
+fn call_arity_mismatch_is_reported() {
+    let errors = check_source("import std.Math; scene main { let x = Math.sin(); }").unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected 1 argument, found 0"))
+    );
+
+    let errors =
+        check_source("import std.Math; scene main { let x = Math.sin(1deg, 2deg); }").unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected 1 argument, found 2"))
+    );
+}
+
+#[test]
+fn color_rgb_out_of_range_literal_is_a_compile_time_error() {
+    let errors = check_source("import std.Color; scene main { let x = Color.rgb(255, 300, 0); }")
+        .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("color channel `300` is out of range 0..=255")
+    }));
+}
+
+#[test]
+fn math_clamp_min_greater_than_max_literal_is_a_compile_time_error() {
+    let errors =
+        check_source("import std.Math; scene main { let x = Math.clamp(1, 5, 2); }").unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("clamp's min (5) is greater than its max (2)")
+    }));
+}
+
+#[test]
+fn math_clamp_variants_type_check() {
+    let result = check_source(
+        r#"
+        import std.Math;
+        scene main {
+            let below = Math.clamp(-5, 0, 10);
+            let inside = Math.clamp(5, 0, 10);
+            let above = Math.clamp(15, 0, 10);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn math_lerp_variants_type_check() {
+    let result = check_source(
+        r#"
+        import std.Math;
+        scene main {
+            let a = Math.lerp(0.0, 10.0, 0.0);
+            let b = Math.lerp(0.0, 10.0, 0.5);
+            let c = Math.lerp(0.0, 10.0, 1.0);
+            let d = Math.lerp(0.0, 10.0, 1.5);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn color_mix_and_hsv_type_check() {
+    let result = check_source(
+        r#"
+        import std.Color;
+        scene main {
+            let a = Color.mix(red, blue, 0.5);
+            let b = Color.hsv(180deg, 100%, 100%);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}

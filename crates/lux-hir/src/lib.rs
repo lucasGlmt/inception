@@ -10,6 +10,7 @@ pub mod error;
 pub mod hir;
 pub mod ids;
 pub mod resolve;
+pub mod user_modules;
 
 #[cfg(test)]
 mod tests;
@@ -18,4 +19,5 @@ pub use environment::TargetEnvironment;
 pub use error::HirError;
 pub use hir::*;
 pub use ids::{LocalId, RoleId, SceneId, TargetId};
-pub use resolve::lower;
+pub use resolve::{lower, lower_with_modules};
+pub use user_modules::UserModuleEnvironment;

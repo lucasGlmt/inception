@@ -9,4 +9,5 @@ repository.workspace = true
 lux-syntax.workspace = true
 lux-hir.workspace = true
 lux-typeck.workspace = true
+lux-stdlib.workspace = true
 lux-bytecode.workspace = true

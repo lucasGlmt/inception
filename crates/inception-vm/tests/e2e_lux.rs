@@ -12,7 +12,10 @@
 //! `lighting_pipeline.rs` in this same directory takes this one step
 //! further, all the way through to a rendered DMX frame.
 
-use inception_core::{Duration, LightingState, Timestamp, TransitionEngine, VirtualClock};
+use inception_core::{
+    Duration, FixtureId, LightingState, ResolvedTarget, Rgb, TargetId, Timestamp, TransitionEngine,
+    VirtualClock,
+};
 use inception_vm::Vm;
 use lux_compiler::TargetEnvironment;
 
@@ -90,6 +93,57 @@ fn compiler_task_brief_worked_example_runs_to_completion() {
     vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
         .unwrap();
     assert!(vm.is_finished(), "1.500s elapsed, the wait is over");
+}
+
+#[test]
+fn stdlib_module_worked_example_runs_to_completion() {
+    // The module-system milestone's own end-to-end success criterion:
+    // imports, a qualified `Math.sin` call, and a `Color.rgb` call feeding
+    // a rig-contract-declared target, taken all the way through parsing,
+    // module resolution, HIR, type checking, MIR, bytecode, the verifier
+    // and VM execution.
+    let source = r#"
+        import std.Math;
+        import std.Color;
+
+        rig contract DemoRig {
+            role Washes: Group<Color>;
+        }
+
+        scene main {
+            let wave_point = Math.sin(90deg);
+            let orange = Color.rgb(255, 120, 20);
+
+            Washes.color = orange;
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("worked example should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    lighting.define_target(
+        TargetId(0),
+        ResolvedTarget {
+            fixtures: vec![FixtureId(0)],
+        },
+    );
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    assert!(vm.is_finished());
+    assert_eq!(
+        lighting.color(FixtureId(0)),
+        Rgb {
+            red: 255 * 257,
+            green: 120 * 257,
+            blue: 20 * 257,
+        }
+    );
 }
 
 #[test]

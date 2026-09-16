@@ -17,6 +17,7 @@
 
 use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
 use crate::instruction::Instruction;
+use crate::intrinsic::IntrinsicId;
 use crate::module::{BytecodeModule, BytecodeVersion, Function};
 use crate::value::ValueType;
 
@@ -52,6 +53,21 @@ pub enum VerificationErrorKind {
     },
     /// `Wait` popped a value that isn't a `Duration`.
     InvalidWaitOperand(ValueType),
+    /// A `CallIntrinsic`'s `arg_count` doesn't match
+    /// `intrinsic.param_types().len()`.
+    IntrinsicArityMismatch {
+        intrinsic: IntrinsicId,
+        declared: u8,
+        expected: usize,
+    },
+    /// One of a `CallIntrinsic`'s operands, popped off the stack, doesn't
+    /// match `intrinsic.param_types()` at that position.
+    InvalidIntrinsicOperand {
+        intrinsic: IntrinsicId,
+        index: usize,
+        expected: ValueType,
+        found: ValueType,
+    },
     /// Either the function's code doesn't end with `Return`, or it does
     /// but the operand stack isn't empty at that point.
     InvalidReturn,
@@ -272,6 +288,55 @@ fn verify_instruction(
             }
             // V1 defines no parameters or return values for calls, so
             // there's no stack effect to check yet.
+        }
+
+        Instruction::CallIntrinsic {
+            intrinsic,
+            arg_count,
+        } => {
+            let params = intrinsic.param_types();
+            if arg_count as usize != params.len() {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::IntrinsicArityMismatch {
+                        intrinsic,
+                        declared: arg_count,
+                        expected: params.len(),
+                    },
+                ));
+                // The declared arg count is untrustworthy, so there's no
+                // sound number of operands to pop — bail out of this
+                // instruction rather than desynchronize the simulated
+                // stack for everything that follows.
+                return;
+            }
+            // Operands were pushed left-to-right, so the last argument is
+            // on top; pop in reverse to check each against its expected
+            // type in argument order.
+            for (arg_index, &expected) in params.iter().enumerate().rev() {
+                match stack.pop() {
+                    None => errors.push(VerificationError::at(
+                        function.id,
+                        index,
+                        VerificationErrorKind::StackUnderflow,
+                    )),
+                    Some(found) if found != expected => {
+                        errors.push(VerificationError::at(
+                            function.id,
+                            index,
+                            VerificationErrorKind::InvalidIntrinsicOperand {
+                                intrinsic,
+                                index: arg_index,
+                                expected,
+                                found,
+                            },
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+            stack.push(intrinsic.return_type());
         }
 
         Instruction::Return => {

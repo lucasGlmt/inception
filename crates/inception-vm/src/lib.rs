@@ -11,6 +11,7 @@
 
 pub mod error;
 pub mod frame;
+pub mod intrinsic;
 pub mod state;
 pub mod value;
 pub mod vm;

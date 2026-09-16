@@ -1,6 +1,7 @@
 use crate::attribute::Attribute;
 use crate::ids::{ConstantId, FunctionId, LocalId, TargetId};
 use crate::instruction::Instruction;
+use crate::intrinsic::IntrinsicId;
 use crate::module::{BytecodeModule, BytecodeVersion, Function};
 use crate::value::{Constant, ValueType};
 use crate::verify::{VerificationErrorKind, verify};
@@ -453,4 +454,122 @@ fn transition_rejects_wrong_value_and_duration_types() {
             expected: ValueType::Intensity,
             found: ValueType::Color,
         }));
+}
+
+#[test]
+fn valid_call_intrinsic_passes() {
+    let module = function_with(
+        vec![Constant::Angle(90_000)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::MathSin,
+                arg_count: 1,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        1,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn call_intrinsic_arity_mismatch_is_rejected() {
+    let module = function_with(
+        vec![Constant::Angle(90_000)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::MathSin,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| e.kind
+        == VerificationErrorKind::IntrinsicArityMismatch {
+            intrinsic: IntrinsicId::MathSin,
+            declared: 2,
+            expected: 1,
+        }));
+}
+
+#[test]
+fn call_intrinsic_wrong_operand_type_is_rejected() {
+    let module = function_with(
+        vec![Constant::Color(crate::value::ColorValue {
+            r: 1,
+            g: 2,
+            b: 3,
+        })],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::MathSin,
+                arg_count: 1,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| e.kind
+        == VerificationErrorKind::InvalidIntrinsicOperand {
+            intrinsic: IntrinsicId::MathSin,
+            index: 0,
+            expected: ValueType::Angle,
+            found: ValueType::Color,
+        }));
+}
+
+#[test]
+fn call_intrinsic_on_empty_stack_is_a_stack_underflow() {
+    let module = function_with(
+        vec![],
+        vec![],
+        vec![
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::MathSin,
+                arg_count: 1,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == VerificationErrorKind::StackUnderflow)
+    );
+}
+
+#[test]
+fn call_intrinsic_pushes_its_return_type() {
+    let module = function_with(
+        vec![Constant::Int(255), Constant::Int(120), Constant::Int(20)],
+        vec![ValueType::Color],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::Const(ConstantId(2)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::ColorRgb,
+                arg_count: 3,
+            },
+            Instruction::StoreLocal(LocalId(0)),
+            Instruction::Return,
+        ],
+        3,
+    );
+    verify(&module).expect("valid module should verify");
 }

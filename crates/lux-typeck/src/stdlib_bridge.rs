@@ -1,0 +1,71 @@
+//! The one boundary conversion between `lux-typeck`'s [`Type`] and
+//! `lux-stdlib`'s [`lux_stdlib::ParamType`] — the same idiom this
+//! workspace already uses to cross from a compiler-frontend type to a
+//! narrower runtime-facing one (e.g. `Type` -> `lux_bytecode::ValueType`
+//! in `lux-mir`).
+//!
+//! `lux-stdlib` has zero dependencies, so it cannot name `lux_typeck::Type`
+//! itself — this conversion has to live on this (the higher) side.
+
+use lux_stdlib::ParamType;
+
+use crate::types::Type;
+
+/// Total: every `Type` maps to *some* `ParamType`. `Bool`/`Duration`/
+/// `Frequency`/`Tempo` have no stdlib representation, so they map to
+/// [`ParamType::Unsupported`] — a sentinel no real `Signature` parameter
+/// ever uses, guaranteeing such an argument can never accidentally match
+/// a real overload; it only ever produces a clean type-mismatch
+/// diagnostic (see `checker.rs::check_call`).
+pub fn to_param_type(ty: Type) -> ParamType {
+    match ty {
+        Type::Int => ParamType::Int,
+        Type::Float => ParamType::Float,
+        Type::Angle => ParamType::Angle,
+        Type::Intensity => ParamType::Intensity,
+        Type::Color => ParamType::Color,
+        Type::Bool | Type::Duration | Type::Frequency | Type::Tempo => ParamType::Unsupported,
+    }
+}
+
+/// The inverse, used for a `Signature`'s `return_ty`. No real signature
+/// ever returns `Unsupported`, so that case is an internal-invariant
+/// violation, not a user-facing error.
+pub fn from_param_type(ty: ParamType) -> Type {
+    match ty {
+        ParamType::Int => Type::Int,
+        ParamType::Float => Type::Float,
+        ParamType::Angle => Type::Angle,
+        ParamType::Intensity => Type::Intensity,
+        ParamType::Color => Type::Color,
+        ParamType::Unsupported => unreachable!(
+            "from_param_type: no stdlib signature returns `Unsupported` — \
+             this would mean a `Signature::return_ty` was misconfigured"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_representable_types() {
+        for ty in [
+            Type::Int,
+            Type::Float,
+            Type::Angle,
+            Type::Intensity,
+            Type::Color,
+        ] {
+            assert_eq!(from_param_type(to_param_type(ty)), ty);
+        }
+    }
+
+    #[test]
+    fn unrepresentable_types_map_to_unsupported() {
+        for ty in [Type::Bool, Type::Duration, Type::Frequency, Type::Tempo] {
+            assert_eq!(to_param_type(ty), ParamType::Unsupported);
+        }
+    }
+}

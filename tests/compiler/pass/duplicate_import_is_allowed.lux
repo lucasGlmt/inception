@@ -1,0 +1,6 @@
+import std.Math;
+import std.Math;
+
+scene main {
+    let x = Math.sin(0deg);
+}

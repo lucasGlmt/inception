@@ -184,13 +184,45 @@ impl Parser {
             Some(Item::Scene(self.parse_scene_decl()))
         } else if self.check(TokenKind::Rig) {
             Some(Item::RigContract(self.parse_rig_contract_decl()))
+        } else if self.check(TokenKind::Import) {
+            Some(Item::Import(self.parse_import_decl()))
         } else {
             let tok = self.peek().clone();
             self.error(
-                format!("expected `scene` or `rig`, found {}", tok.kind.describe()),
+                format!(
+                    "expected `scene`, `rig` or `import`, found {}",
+                    tok.kind.describe()
+                ),
                 tok.span,
             );
             None
+        }
+    }
+
+    /// `import` IDENT (`.` IDENT)* `;` — no wildcards (`std.Math.*`), no
+    /// aliasing.
+    fn parse_import_decl(&mut self) -> ImportDecl {
+        let import_tok = self.advance(); // `import`
+        let mut path = vec![self.expect_identifier("expected module name after `import`")];
+        while self.check(TokenKind::Dot) {
+            self.advance();
+            if self.check(TokenKind::Star) {
+                let star = self.advance();
+                self.error(
+                    "wildcard imports (`import a.b.*;`) are not supported".to_string(),
+                    star.span,
+                );
+                break;
+            }
+            path.push(self.expect_identifier("expected module path segment after `.`"));
+        }
+        let semi = self.expect(TokenKind::Semicolon, "expected `;` after import");
+        let end = semi
+            .map(|t| t.span.end)
+            .unwrap_or_else(|| path.last().expect("path always has >=1 segment").span.end);
+        ImportDecl {
+            path,
+            span: Span::new(import_tok.span.start, end),
         }
     }
 
@@ -285,7 +317,14 @@ impl Parser {
         match self.peek_kind() {
             TokenKind::Let => Statement::Let(self.parse_let_statement()),
             TokenKind::Wait => Statement::Wait(self.parse_wait_statement()),
-            TokenKind::Ident(_) if *self.peek_nth_kind(1) == TokenKind::Dot => {
+            // `Ident . Ident (` is a qualified call (`Math.sin(...)`) used
+            // as a bare expression statement, not an attribute assignment
+            // or transition — those never have `(` right after the
+            // attribute name (they're followed by `=` or `->`).
+            TokenKind::Ident(_)
+                if *self.peek_nth_kind(1) == TokenKind::Dot
+                    && *self.peek_nth_kind(3) != TokenKind::LParen =>
+            {
                 self.parse_attribute_statement()
             }
             _ => Statement::Expression(self.parse_expression_statement()),
@@ -508,7 +547,28 @@ impl Parser {
                     span: tok.span,
                 };
                 if self.check(TokenKind::LParen) {
-                    self.parse_call(id)
+                    let callee = CallPath {
+                        qualifier: None,
+                        name: id,
+                        span: tok.span,
+                    };
+                    self.parse_call(callee)
+                } else if self.check(TokenKind::Dot) && *self.peek_nth_kind(2) == TokenKind::LParen
+                {
+                    // Not reachable today: `Ident . Ident (` never lands
+                    // here from `parse_statement` (routed to the
+                    // attribute-statement guard above), but a qualified
+                    // call can still appear nested inside another
+                    // expression, e.g. `1 + Math.sin(90deg)`.
+                    self.advance(); // `.`
+                    let name = self.expect_identifier("expected function name after `.`");
+                    let span = Span::new(id.span.start, name.span.end);
+                    let callee = CallPath {
+                        qualifier: Some(id),
+                        name,
+                        span,
+                    };
+                    self.parse_call(callee)
                 } else {
                     Expression::Identifier(id)
                 }
@@ -533,7 +593,7 @@ impl Parser {
         }
     }
 
-    fn parse_call(&mut self, callee: Identifier) -> Expression {
+    fn parse_call(&mut self, callee: CallPath) -> Expression {
         let lparen = self.advance(); // `(`
         let mut args = Vec::new();
         if !self.check(TokenKind::RParen) {
@@ -686,13 +746,53 @@ mod tests {
         match &scene.body.statements[1] {
             Statement::Expression(expr_stmt) => match &expr_stmt.expr {
                 Expression::Call(call) => {
-                    assert_eq!(call.callee.name, "foo");
+                    assert!(call.callee.qualifier.is_none());
+                    assert_eq!(call.callee.name.name, "foo");
                     assert_eq!(call.args.len(), 2);
                 }
                 other => panic!("expected call, got {other:?}"),
             },
             other => panic!("expected expression statement, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_import_decl() {
+        let file = parse("import std.Math; scene main {}").expect("should parse");
+        let Item::Import(import) = &file.items[0] else {
+            panic!("expected import")
+        };
+        assert_eq!(
+            import
+                .path
+                .iter()
+                .map(|id| id.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["std", "Math"]
+        );
+    }
+
+    #[test]
+    fn parses_qualified_call() {
+        let src = "import std.Math; scene main { let x = Math.sin(90deg); }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[1] else {
+            panic!("expected scene")
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Call(call) = &let_stmt.value else {
+            panic!("expected call expression, got {:?}", let_stmt.value);
+        };
+        assert_eq!(call.callee.qualifier.as_ref().unwrap().name, "Math");
+        assert_eq!(call.callee.name.name, "sin");
+        assert_eq!(call.args.len(), 1);
+    }
+
+    #[test]
+    fn wildcard_import_is_a_syntax_error() {
+        assert!(parse("import std.Math.*;").is_err());
     }
 
     #[test]

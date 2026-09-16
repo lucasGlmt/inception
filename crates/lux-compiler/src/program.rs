@@ -1,0 +1,199 @@
+//! Multi-file compilation: an entry file plus zero or more imported user
+//! modules (`import show.Helpers;`).
+//!
+//! `lux-project` is the only crate that touches the filesystem or builds
+//! the module dependency graph (discovering files, resolving import
+//! paths, detecting cycles) — this module only orchestrates the
+//! *compiler* side once that graph is already in hand as plain
+//! `SourceUnit`s. `lux-hir`/`lux-typeck` still never see a file path;
+//! they only ever see one file's source plus a
+//! [`lux_hir::UserModuleEnvironment`] telling them which qualifiers are
+//! real (see that type's docs).
+//!
+//! Every non-entry module is parsed, resolved and type-checked purely to
+//! surface *that file's own* diagnostics — a syntax or type error in an
+//! imported file must be visible even though nothing in the entry file
+//! necessarily calls into it (today, nothing ever could: see
+//! `lux_hir::UserModuleEnvironment`'s docs on the "zero exports" V1
+//! limitation). A broken imported module fails the whole build, exactly
+//! like a broken entry file would — "correctness before convenience"
+//! (`AGENTS.md`) over a partially-working build.
+
+use std::path::PathBuf;
+
+use lux_hir::{TargetEnvironment, UserModuleEnvironment};
+
+use crate::diagnostic::{self, Diagnostic};
+use crate::{BytecodeModule, CheckedProgram};
+
+/// One Lux source file, already read from disk by the caller (typically
+/// `lux-project`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceUnit {
+    /// For diagnostics only — `None` is fine for a unit that isn't backed
+    /// by a real file (e.g. an isolated test).
+    pub path: Option<PathBuf>,
+    pub source: String,
+    /// The dotted path (e.g. `"show.Helpers"`) of every non-`std` import
+    /// *this unit itself* resolved to a real file — already decided by
+    /// the caller's module graph, never re-derived here.
+    pub user_module_paths: Vec<String>,
+}
+
+/// A whole program: the file execution starts from, plus every other
+/// file it (transitively) imports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramSources {
+    pub entry: SourceUnit,
+    pub modules: Vec<SourceUnit>,
+}
+
+fn user_modules(unit: &SourceUnit) -> UserModuleEnvironment {
+    UserModuleEnvironment::from_paths(unit.user_module_paths.iter().cloned())
+}
+
+fn tag(diagnostics: Vec<Diagnostic>, unit: &SourceUnit) -> Vec<Diagnostic> {
+    match &unit.path {
+        Some(path) => diagnostics
+            .into_iter()
+            .map(|d| d.with_source(path.clone()))
+            .collect(),
+        None => diagnostics,
+    }
+}
+
+/// Parses, resolves and type-checks `unit` purely for its own
+/// diagnostics — the result (a resolved+checked `HirFile`) is discarded;
+/// only whether it succeeded matters here.
+fn check_module_diagnostics(
+    unit: &SourceUnit,
+    targets: &TargetEnvironment,
+) -> Result<(), Vec<Diagnostic>> {
+    let ast = lux_syntax::parse(&unit.source).map_err(diagnostic::from_syntax_errors)?;
+    let hir = lux_hir::lower_with_modules(&ast, targets, &user_modules(unit))
+        .map_err(diagnostic::from_hir_errors)?;
+    lux_typeck::check(&hir).map_err(diagnostic::from_type_errors)?;
+    Ok(())
+}
+
+/// Checks a whole multi-file program: every imported module first (for
+/// its own diagnostics), then the entry file for real. On success,
+/// returns the entry file's [`CheckedProgram`] — exactly what
+/// [`crate::check`] would have returned had every import already
+/// resolved.
+pub fn check_program(
+    sources: &ProgramSources,
+    targets: &TargetEnvironment,
+) -> Result<CheckedProgram, Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+    for unit in &sources.modules {
+        if let Err(errors) = check_module_diagnostics(unit, targets) {
+            diagnostics.extend(tag(errors, unit));
+        }
+    }
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
+    let entry = &sources.entry;
+    let ast = lux_syntax::parse(&entry.source)
+        .map_err(diagnostic::from_syntax_errors)
+        .map_err(|errors| tag(errors, entry))?;
+    let hir = lux_hir::lower_with_modules(&ast, targets, &user_modules(entry))
+        .map_err(diagnostic::from_hir_errors)
+        .map_err(|errors| tag(errors, entry))?;
+    let typed = lux_typeck::check(&hir)
+        .map_err(diagnostic::from_type_errors)
+        .map_err(|errors| tag(errors, entry))?;
+    Ok(CheckedProgram { hir, typed })
+}
+
+/// Like [`crate::compile`], but for a whole multi-file [`ProgramSources`]
+/// — see [`check_program`].
+pub fn compile_program(
+    sources: &ProgramSources,
+    targets: &TargetEnvironment,
+) -> Result<BytecodeModule, Vec<Diagnostic>> {
+    let checked = check_program(sources, targets)?;
+    let mir = lux_mir::lower(&checked.hir, &checked.typed);
+    let bytecode = lux_mir::lower_to_bytecode(&mir);
+
+    match lux_bytecode::verify(&bytecode) {
+        Ok(()) => Ok(bytecode),
+        Err(errors) => Err(vec![Diagnostic::internal(format!(
+            "internal compiler error: generated bytecode failed verification: {errors:?}"
+        ))]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit(source: &str) -> SourceUnit {
+        SourceUnit {
+            path: None,
+            source: source.into(),
+            user_module_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn entry_only_program_behaves_like_single_file_check() {
+        let sources = ProgramSources {
+            entry: unit("scene main { wait 1s; }"),
+            modules: Vec::new(),
+        };
+        check_program(&sources, &TargetEnvironment::new()).expect("should check");
+    }
+
+    #[test]
+    fn entry_can_call_into_an_unresolved_user_module_only_as_far_as_hir_allows() {
+        // Zero exports today (see `UserModuleEnvironment`'s docs): the
+        // module resolves, but any member access on it still fails.
+        let mut helpers_unit = unit("scene helper_unused {}");
+        helpers_unit.user_module_paths = Vec::new();
+        let mut entry = unit("import show.Helpers; scene main { let x = Helpers.foo(1); }");
+        entry.user_module_paths = vec!["show.Helpers".to_string()];
+
+        let sources = ProgramSources {
+            entry,
+            modules: vec![helpers_unit],
+        };
+        let diagnostics = check_program(&sources, &TargetEnvironment::new()).unwrap_err();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("module `Helpers` has no member `foo`"))
+        );
+    }
+
+    #[test]
+    fn a_broken_imported_module_fails_the_whole_build() {
+        let mut helpers_unit = unit("scene main { wait ; }"); // syntax error
+        helpers_unit.path = Some(PathBuf::from("show/Helpers.lux"));
+        let mut entry = unit("import show.Helpers; scene main { wait 1s; }");
+        entry.user_module_paths = vec!["show.Helpers".to_string()];
+
+        let sources = ProgramSources {
+            entry,
+            modules: vec![helpers_unit],
+        };
+        let diagnostics = check_program(&sources, &TargetEnvironment::new()).unwrap_err();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.source == Some(PathBuf::from("show/Helpers.lux")))
+        );
+    }
+
+    #[test]
+    fn compile_program_produces_verified_bytecode() {
+        let sources = ProgramSources {
+            entry: unit("scene main { wait 1s; }"),
+            modules: Vec::new(),
+        };
+        let bytecode = compile_program(&sources, &TargetEnvironment::new()).unwrap();
+        lux_bytecode::verify(&bytecode).expect("compiler must generate valid bytecode");
+    }
+}

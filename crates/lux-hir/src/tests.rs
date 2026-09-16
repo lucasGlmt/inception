@@ -1,9 +1,10 @@
 use lux_syntax::ast::Literal;
 
 use crate::environment::TargetEnvironment;
-use crate::hir::{HirExpr, HirStatement};
+use crate::hir::{HirCallee, HirExpr, HirStatement};
 use crate::ids::LocalId;
-use crate::resolve::lower;
+use crate::resolve::{lower, lower_with_modules};
+use crate::user_modules::UserModuleEnvironment;
 
 fn lower_ok(source: &str) -> crate::hir::HirFile {
     lower_ok_with(source, &TargetEnvironment::new())
@@ -167,5 +168,92 @@ fn assignment_value_is_still_resolved_against_locals() {
     assert_eq!(
         assign.value,
         HirExpr::Local(LocalId(0), assign.value.span())
+    );
+}
+
+#[test]
+fn resolves_call_to_imported_std_function() {
+    let file = lower_ok("import std.Math; scene main { let x = Math.sin(90deg); }");
+    let HirStatement::Let(let_stmt) = &file.scenes[0].statements[0] else {
+        panic!("expected let statement");
+    };
+    let HirExpr::Call(call) = &let_stmt.value else {
+        panic!("expected call expression, got {:?}", let_stmt.value);
+    };
+    let HirCallee::Std {
+        module_path, name, ..
+    } = &call.callee;
+    assert_eq!(*module_path, &["std", "Math"]);
+    assert_eq!(name, "sin");
+    assert_eq!(call.args.len(), 1);
+}
+
+#[test]
+fn unknown_std_module_is_a_resolution_error() {
+    let errors = lower_err("import std.Foo; scene main {}");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("unknown module `std.Foo`"))
+    );
+}
+
+#[test]
+fn unknown_member_on_std_module_is_a_resolution_error() {
+    let errors = lower_err("import std.Math; scene main { let x = Math.bogus(1); }");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("module `Math` has no member `bogus`"))
+    );
+}
+
+#[test]
+fn unknown_member_suggests_closest_name() {
+    let errors = lower_err("import std.Math; scene main { let x = Math.sn(90deg); }");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.help.as_deref() == Some("did you mean `sin`?"))
+    );
+}
+
+#[test]
+fn qualifier_used_without_import_is_a_resolution_error() {
+    let errors = lower_err("scene main { let x = Math.sin(90deg); }");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("module `Math` is not imported"))
+    );
+}
+
+#[test]
+fn duplicate_import_of_same_module_is_not_an_error() {
+    let file = lower_ok("import std.Math; import std.Math; scene main { let x = Math.sin(0deg); }");
+    assert_eq!(file.scenes[0].locals.len(), 1);
+}
+
+#[test]
+fn user_module_import_resolves_but_has_no_members() {
+    let ast = lux_syntax::parse("import show.Helpers; scene main { let x = Helpers.foo(1); }")
+        .expect("should parse");
+    let user_modules = UserModuleEnvironment::from_paths(["show.Helpers".to_string()]);
+    let errors = lower_with_modules(&ast, &TargetEnvironment::new(), &user_modules)
+        .expect_err("should fail resolution");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("module `Helpers` has no member `foo`"))
+    );
+}
+
+#[test]
+fn unresolved_user_module_is_a_resolution_error() {
+    let errors = lower_err("import show.Helpers; scene main {}");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("unknown module `show.Helpers`"))
     );
 }

@@ -11,11 +11,13 @@
 //! and DMX resolution belongs to `inception-linker`.
 
 pub mod diagnostic;
+pub mod program;
 
 pub use diagnostic::{Diagnostic, Stage};
 pub use lux_bytecode::BytecodeModule;
 pub use lux_hir::{HirFile, TargetEnvironment, TargetId};
 pub use lux_typeck::TypedProgram;
+pub use program::{ProgramSources, SourceUnit, check_program, compile_program};
 
 /// The result of successfully checking a Lux program: its fully resolved
 /// and type-checked HIR, plus the type information [`lux_mir::lower`]

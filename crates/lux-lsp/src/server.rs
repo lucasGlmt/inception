@@ -61,6 +61,11 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                     ..CompletionOptions::default()
                 }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
@@ -79,6 +84,7 @@ impl LanguageServer for Backend {
                                     SemanticTokenType::PARAMETER,
                                     SemanticTokenType::TYPE,
                                     SemanticTokenType::PROPERTY,
+                                    SemanticTokenType::NAMESPACE,
                                 ],
                                 token_modifiers: vec![],
                             },
@@ -151,6 +157,13 @@ impl LanguageServer for Backend {
             .analysis(&p.text_document.uri)
             .await
             .and_then(|a| a.hover(p.position)))
+    }
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let p = params.text_document_position_params;
+        Ok(self
+            .analysis(&p.text_document.uri)
+            .await
+            .and_then(|a| a.signature_help(p.position)))
     }
     async fn goto_definition(
         &self,

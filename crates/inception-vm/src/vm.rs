@@ -17,6 +17,7 @@ use lux_bytecode::{BytecodeModule, FunctionId, Instruction};
 
 use crate::error::{VmError, VmErrorKind, VmInitError};
 use crate::frame::Frame;
+use crate::intrinsic::eval_intrinsic;
 use crate::state::VmState;
 use crate::value::Value;
 
@@ -226,6 +227,10 @@ impl Vm {
             Instruction::Div => self.exec_binary(function_id, pc, BinOp::Div),
             Instruction::Wait => self.exec_wait(function_id, pc, clock),
             Instruction::Call(target) => self.exec_call(function_id, pc, target),
+            Instruction::CallIntrinsic {
+                intrinsic,
+                arg_count,
+            } => self.exec_call_intrinsic(function_id, pc, intrinsic, arg_count),
             Instruction::Return => Ok(self.exec_return()),
             Instruction::Pop => self.exec_pop(function_id, pc),
             Instruction::SetAttribute { target, attribute } => {
@@ -461,6 +466,30 @@ impl Vm {
 
     fn exec_pop(&mut self, function: FunctionId, pc: usize) -> Result<Step, VmError> {
         self.pop(function, pc)?;
+        Ok(Step::Continue)
+    }
+
+    /// Pops `arg_count` operands (already verified, by construction, to
+    /// have exactly the types `intrinsic.param_types()` expects — see
+    /// `lux_bytecode::verify`), evaluates the intrinsic, and pushes its
+    /// one result. `eval_intrinsic` is total: there is no error path
+    /// here, matching every other "deterministic runtime, no panics"
+    /// operation in this VM.
+    fn exec_call_intrinsic(
+        &mut self,
+        function: FunctionId,
+        pc: usize,
+        intrinsic: lux_bytecode::IntrinsicId,
+        arg_count: u8,
+    ) -> Result<Step, VmError> {
+        let mut args = Vec::with_capacity(arg_count as usize);
+        for _ in 0..arg_count {
+            args.push(self.pop(function, pc)?);
+        }
+        // Popped last-argument-first; reverse to restore left-to-right
+        // evaluation order before handing off to `eval_intrinsic`.
+        args.reverse();
+        self.stack.push(eval_intrinsic(intrinsic, &args));
         Ok(Step::Continue)
     }
 }

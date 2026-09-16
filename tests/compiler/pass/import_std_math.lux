@@ -1,0 +1,5 @@
+import std.Math;
+
+scene main {
+    let wave_point = Math.sin(90deg);
+}

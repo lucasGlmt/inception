@@ -191,6 +191,7 @@ pub enum HirExpr {
         rhs: Box<HirExpr>,
         span: Span,
     },
+    Call(HirCall),
 }
 
 impl HirExpr {
@@ -200,6 +201,34 @@ impl HirExpr {
             HirExpr::Local(_, span) => *span,
             HirExpr::Unary { span, .. } => *span,
             HirExpr::Binary { span, .. } => *span,
+            HirExpr::Call(call) => call.span,
         }
     }
+}
+
+/// A resolved call to a stdlib function, e.g. `Math.sin(90deg)`.
+///
+/// Bare (unqualified) calls never reach this: `lux-hir` has no
+/// user-defined-function namespace, so an unqualified call is always an
+/// `unknown function` error (see `resolve.rs`'s module doc), exactly as
+/// before this variant existed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirCall {
+    pub callee: HirCallee,
+    pub args: Vec<HirExpr>,
+    pub span: Span,
+}
+
+/// Only one variant exists today because a resolved *user* module call
+/// never reaches here — a user module currently exports zero members, so
+/// `Helpers.foo(...)` always fails resolution first (see `resolve.rs`).
+/// Kept as an enum, not a struct, so adding `User { .. }` is additive once
+/// user-defined functions and real module exports exist.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirCallee {
+    Std {
+        module_path: &'static [&'static str],
+        name: String,
+        name_span: Span,
+    },
 }

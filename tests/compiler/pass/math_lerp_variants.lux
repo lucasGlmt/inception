@@ -1,0 +1,8 @@
+import std.Math;
+
+scene main {
+    let start = Math.lerp(0.0, 10.0, 0.0);
+    let midpoint = Math.lerp(0.0, 10.0, 0.5);
+    let end = Math.lerp(0.0, 10.0, 1.0);
+    let extrapolated = Math.lerp(0.0, 10.0, 1.5);
+}

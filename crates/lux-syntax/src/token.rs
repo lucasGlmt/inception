@@ -80,6 +80,7 @@ pub enum TokenKind {
     Contract,
     Role,
     Group,
+    Import,
 
     // Punctuation
     LBrace,
@@ -128,6 +129,7 @@ impl TokenKind {
             TokenKind::Contract => "`contract`".to_string(),
             TokenKind::Role => "`role`".to_string(),
             TokenKind::Group => "`Group`".to_string(),
+            TokenKind::Import => "`import`".to_string(),
             TokenKind::LBrace => "`{`".to_string(),
             TokenKind::RBrace => "`}`".to_string(),
             TokenKind::LParen => "`(`".to_string(),
@@ -173,6 +175,7 @@ pub fn keyword(ident: &str) -> Option<TokenKind> {
         "contract" => TokenKind::Contract,
         "role" => TokenKind::Role,
         "Group" => TokenKind::Group,
+        "import" => TokenKind::Import,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "red" => TokenKind::Red,

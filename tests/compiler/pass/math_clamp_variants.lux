@@ -1,0 +1,7 @@
+import std.Math;
+
+scene main {
+    let below = Math.clamp(-5, 0, 10);
+    let inside = Math.clamp(5, 0, 10);
+    let above = Math.clamp(15, 0, 10);
+}

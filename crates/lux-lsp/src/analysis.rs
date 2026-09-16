@@ -10,8 +10,8 @@ use lux_typeck::{Attribute, ExpectedType, Type};
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Diagnostic, DiagnosticRelatedInformation,
     DiagnosticSeverity, DocumentSymbol, Documentation, Hover, HoverContents, InsertTextFormat,
-    Location, MarkupContent, MarkupKind, Position, Range, SemanticToken, SymbolKind, TextEdit, Url,
-    WorkspaceEdit,
+    Location, MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, Position, Range,
+    SemanticToken, SignatureHelp, SignatureInformation, SymbolKind, TextEdit, Url, WorkspaceEdit,
 };
 
 use crate::source_map::SourceMap;
@@ -269,7 +269,19 @@ impl AnalysisSnapshot {
     pub fn complete(&self, position: Position) -> Vec<CompletionItem> {
         let offset = self.document.map.offset(&self.document.source, position);
         let prefix = identifier_prefix(&self.document.source, offset);
+
+        if let Some(segments) = import_path_segments(&self.document.source, offset) {
+            return import_completions(&segments, prefix);
+        }
+
         if let Some(receiver) = member_receiver(&self.document.source, offset) {
+            if let Some(module) = self
+                .imported_std_modules()
+                .into_iter()
+                .find(|module| module.short_name == receiver)
+            {
+                return std_member_completions(module, prefix);
+            }
             return self
                 .role_members(receiver)
                 .into_iter()
@@ -330,6 +342,9 @@ impl AnalysisSnapshot {
     }
 
     pub fn expected_type(&self, offset: usize) -> Option<ExpectedType> {
+        if let Some(expected) = self.expected_call_argument_type(offset) {
+            return Some(expected);
+        }
         let before = &self.document.source[..offset.min(self.document.source.len())];
         let statement = before
             .rsplit([';', '{', '}'])
@@ -361,6 +376,75 @@ impl AnalysisSnapshot {
         None
     }
 
+    /// The expected type of the argument position the cursor sits in,
+    /// inside a qualified stdlib call (`Color.rgb(255, $0`) — delegates
+    /// entirely to `lux_typeck::ExpectedType::for_call_argument`, which
+    /// itself defers to `lux_stdlib`'s registry; this crate never repeats
+    /// the signature data.
+    fn expected_call_argument_type(&self, offset: usize) -> Option<ExpectedType> {
+        let (open_paren, active_param) = enclosing_call_paren(&self.document.source, offset)?;
+        let (qualifier, name) = call_name_before(&self.document.source, open_paren)?;
+        let module = self
+            .imported_std_modules()
+            .into_iter()
+            .find(|module| module.short_name == qualifier)?;
+        ExpectedType::for_call_argument(module.path, name, active_param)
+    }
+
+    /// Signature help for the call the cursor is currently inside,
+    /// listing every overload of `qualifier.name` (see
+    /// `lux_stdlib::candidates`) so an overloaded function like
+    /// `Math.abs` shows both its `Int` and `Float` signatures.
+    pub fn signature_help(&self, position: Position) -> Option<SignatureHelp> {
+        let offset = self.document.map.offset(&self.document.source, position);
+        let (open_paren, active_param) = enclosing_call_paren(&self.document.source, offset)?;
+        let (qualifier, name) = call_name_before(&self.document.source, open_paren)?;
+        let module = self
+            .imported_std_modules()
+            .into_iter()
+            .find(|module| module.short_name == qualifier)?;
+        let candidates = lux_stdlib::candidates(module.path, name);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Prefer the first overload whose arity can still fit the
+        // parameter the cursor is on; falls back to the first overload
+        // when every candidate is already too short (mid-typing).
+        let active_signature = candidates
+            .iter()
+            .position(|sig| active_param < sig.params.len())
+            .unwrap_or(0) as u32;
+
+        let signatures = candidates
+            .iter()
+            .map(|sig| SignatureInformation {
+                label: signature_label(sig),
+                documentation: Some(Documentation::String(sig.doc.into())),
+                parameters: Some(
+                    sig.params
+                        .iter()
+                        .map(|param| ParameterInformation {
+                            label: ParameterLabel::Simple(format!(
+                                "{}: {}",
+                                param.name,
+                                param_type_name(param.ty)
+                            )),
+                            documentation: None,
+                        })
+                        .collect(),
+                ),
+                active_parameter: None,
+            })
+            .collect();
+
+        Some(SignatureHelp {
+            signatures,
+            active_signature: Some(active_signature),
+            active_parameter: Some(active_param as u32),
+        })
+    }
+
     fn roles(&self) -> Vec<RoleInfo> {
         self.document
             .ast
@@ -389,6 +473,28 @@ impl AnalysisSnapshot {
                     capabilities,
                     detail: format!("Group<{names}>"),
                 }
+            })
+            .collect()
+    }
+
+    /// Every `std.*` module this document actually imports, resolved
+    /// against `lux_stdlib`'s registry directly — the LSP never hardcodes
+    /// its own copy of the module/function list. An import of an unknown
+    /// module is simply absent here (its own diagnostic comes from
+    /// `diagnostics()`, via `lux_compiler::check`).
+    fn imported_std_modules(&self) -> Vec<&'static lux_stdlib::StdModule> {
+        self.document
+            .ast
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Import(import) = item else {
+                    return None;
+                };
+                let segments: Vec<&str> = import.path.iter().map(|id| id.name.as_str()).collect();
+                (segments.first() == Some(&"std"))
+                    .then(|| lux_stdlib::find_module(&segments))
+                    .flatten()
             })
             .collect()
     }
@@ -444,7 +550,30 @@ impl AnalysisSnapshot {
         let offset = self.document.map.offset(&self.document.source, position);
         let word = word_at(&self.document.source, offset)?;
         let mut value = None;
-        if let Some(role) = self.roles().into_iter().find(|role| role.name == word.0) {
+        if let Some(module) =
+            qualifier_before(&self.document.source, word.1).and_then(|qualifier| {
+                self.imported_std_modules()
+                    .into_iter()
+                    .find(|module| module.short_name == qualifier)
+            })
+        {
+            if let Some(sig) = module.functions.iter().find(|sig| sig.name == word.0) {
+                value = Some(format!(
+                    "```lux\n{}\n```\n\n{}",
+                    signature_label(sig),
+                    sig.doc
+                ));
+            }
+        } else if let Some(module) = self
+            .imported_std_modules()
+            .into_iter()
+            .find(|module| module.short_name == word.0)
+        {
+            value = Some(format!(
+                "```lux\nmodule {}\n```\n\n{}",
+                module.short_name, module.doc
+            ));
+        } else if let Some(role) = self.roles().into_iter().find(|role| role.name == word.0) {
             value = Some(format!("```lux\nrole {}\n{}\n```", role.name, role.detail));
         } else if let Some(local) = self
             .visible_locals(offset + word.0.len())
@@ -696,6 +825,21 @@ impl AnalysisSnapshot {
                         .range(&self.document.source, scene.name.span),
                     children: None,
                 }),
+                Item::Import(import) => symbols.push(DocumentSymbol {
+                    name: import
+                        .path
+                        .iter()
+                        .map(|segment| segment.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    detail: Some("import".into()),
+                    kind: SymbolKind::MODULE,
+                    tags: None,
+                    deprecated: None,
+                    range: self.document.map.range(&self.document.source, import.span),
+                    selection_range: self.document.map.range(&self.document.source, import.span),
+                    children: None,
+                }),
             }
         }
         symbols
@@ -751,9 +895,17 @@ impl AnalysisSnapshot {
                                 push(identifier.span, 0);
                             }
                             if let Expression::Call(call) = expression {
-                                push(call.callee.span, 1);
+                                if let Some(qualifier) = &call.callee.qualifier {
+                                    push(qualifier.span, 5);
+                                }
+                                push(call.callee.name.span, 1);
                             }
                         });
+                    }
+                }
+                Item::Import(import) => {
+                    for segment in &import.path {
+                        push(segment.span, 5);
                     }
                 }
             }
@@ -887,6 +1039,178 @@ fn member_receiver(source: &str, offset: usize) -> Option<&str> {
         .map_or(0, |(i, ch)| i + ch.len_utf8());
     let receiver = &head[start..];
     (!receiver.is_empty()).then_some(receiver)
+}
+
+/// If `word_start` is immediately preceded by `<ident>.` (ignoring
+/// nothing in between — no whitespace is tolerated, matching Lux's
+/// dotted-call syntax), returns that identifier. Used by `hover` to
+/// recognize `Math` in `Math.sin` when the cursor is on `sin`.
+fn qualifier_before(source: &str, word_start: usize) -> Option<&str> {
+    let before = &source[..word_start.min(source.len())];
+    let before = before.strip_suffix('.')?;
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_ascii_alphanumeric() && *ch != '_')
+        .map_or(0, |(i, ch)| i + ch.len_utf8());
+    let receiver = &before[start..];
+    (!receiver.is_empty()).then_some(receiver)
+}
+
+/// Detects an in-progress `import` path at `offset`, returning the
+/// segments already terminated by a `.` (not including whatever partial
+/// segment is still being typed — that's `identifier_prefix`'s job at the
+/// call site). `import std.$0` returns `["std"]`; a bare `import $0`
+/// returns `[]`; anything that isn't inside an `import` statement's path
+/// returns `None`.
+fn import_path_segments(source: &str, offset: usize) -> Option<Vec<String>> {
+    let before = &source[..offset.min(source.len())];
+    let statement = before.rsplit(';').next().unwrap_or(before);
+    let rest = statement.trim_start().strip_prefix("import")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in rest.trim_start().chars() {
+        if ch == '.' {
+            segments.push(std::mem::take(&mut current));
+        } else if ch.is_ascii_alphanumeric() || ch == '_' {
+            current.push(ch);
+        } else {
+            return None;
+        }
+    }
+    Some(segments)
+}
+
+fn import_completions(segments: &[String], prefix: &str) -> Vec<CompletionItem> {
+    let module_item = |label: &str, detail: &str| CompletionItem {
+        label: label.into(),
+        kind: Some(CompletionItemKind::MODULE),
+        detail: Some(detail.into()),
+        sort_text: Some("0-module".into()),
+        ..CompletionItem::default()
+    };
+    match segments {
+        [] => ["std"]
+            .into_iter()
+            .filter(|name| matches_prefix(name, prefix))
+            .map(|name| module_item(name, "standard library"))
+            .collect(),
+        [root] if root == "std" => lux_stdlib::STD_MODULES
+            .iter()
+            .filter(|module| matches_prefix(module.short_name, prefix))
+            .map(|module| module_item(module.short_name, module.doc))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Member completions for an imported `std` module, deduplicating
+/// overloads (e.g. `Math.abs`'s `Int`/`Float` signatures) down to one
+/// item per function name, with every overload's signature listed in
+/// `detail`.
+fn std_member_completions(
+    module: &'static lux_stdlib::StdModule,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let mut seen = HashSet::new();
+    module
+        .functions
+        .iter()
+        .filter(|sig| seen.insert(sig.name))
+        .filter(|sig| matches_prefix(sig.name, prefix))
+        .map(|sig| {
+            let overloads = lux_stdlib::candidates(module.path, sig.name);
+            let detail = overloads
+                .iter()
+                .map(signature_label)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            CompletionItem {
+                label: sig.name.into(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(detail),
+                documentation: Some(Documentation::String(sig.doc.into())),
+                insert_text: Some(format!("{}($0)", sig.name)),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                sort_text: Some("1-member".into()),
+                ..CompletionItem::default()
+            }
+        })
+        .collect()
+}
+
+fn signature_label(sig: &lux_stdlib::Signature) -> String {
+    let params = sig
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, param_type_name(param.ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{}({params}) -> {}",
+        sig.name,
+        param_type_name(sig.return_ty)
+    )
+}
+
+fn param_type_name(ty: lux_stdlib::ParamType) -> &'static str {
+    match ty {
+        lux_stdlib::ParamType::Int => "Int",
+        lux_stdlib::ParamType::Float => "Float",
+        lux_stdlib::ParamType::Angle => "Angle",
+        lux_stdlib::ParamType::Intensity => "Intensity",
+        lux_stdlib::ParamType::Color => "Color",
+        lux_stdlib::ParamType::Unsupported => "?",
+    }
+}
+
+/// Scans backward from `offset` for the nearest unmatched `(` at depth 0,
+/// returning its byte offset together with how many top-level commas lie
+/// between it and `offset` — that count is exactly the index of the
+/// argument the cursor is currently in. Returns `None` once a `;`/`{`/`}`
+/// is hit at depth 0, meaning `offset` isn't inside a call's argument
+/// list at all.
+fn enclosing_call_paren(source: &str, offset: usize) -> Option<(usize, usize)> {
+    let before = &source[..offset.min(source.len())];
+    let mut depth = 0i32;
+    let mut comma_count = 0usize;
+    for (i, ch) in before.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return Some((i, comma_count));
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => comma_count += 1,
+            ';' | '{' | '}' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Given the byte offset of a call's opening `(`, returns the
+/// `(qualifier, name)` immediately preceding it — e.g. for
+/// `...Color.rgb(...`, `("Color", "rgb")`. `None` if there's no qualified
+/// name there (an unqualified or malformed call).
+fn call_name_before(source: &str, open_paren: usize) -> Option<(&str, &str)> {
+    let before = source[..open_paren].trim_end();
+    let name_start = before
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_ascii_alphanumeric() && *ch != '_')
+        .map_or(0, |(i, ch)| i + ch.len_utf8());
+    let name = &before[name_start..];
+    if name.is_empty() {
+        return None;
+    }
+    let qualifier = qualifier_before(before, name_start)?;
+    Some((qualifier, name))
 }
 
 fn word_at(source: &str, offset: usize) -> Option<(&str, usize, usize)> {
@@ -1127,6 +1451,105 @@ mod tests {
             edits.len(),
             2,
             "only role declaration and target use are renamed"
+        );
+    }
+
+    #[test]
+    fn import_path_completion_proposes_std_modules() {
+        let (analysis, position) = snapshot("import std.$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["Math", "Color"]);
+    }
+
+    #[test]
+    fn bare_import_proposes_std_root() {
+        let (analysis, position) = snapshot("import $0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["std"]);
+    }
+
+    #[test]
+    fn std_module_member_completion_lists_its_functions() {
+        let (analysis, position) = snapshot("import std.Math;\nscene main { let x = Math.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["sin", "cos", "abs", "min", "max", "clamp", "lerp"]);
+    }
+
+    #[test]
+    fn unimported_module_falls_back_to_role_members() {
+        // `Math` isn't imported here, so `.` completion must not silently
+        // show stdlib members for it, and must not panic either.
+        let (analysis, position) = snapshot("scene main { let x = Math.$0 }");
+        assert!(analysis.complete(position).is_empty());
+    }
+
+    #[test]
+    fn hover_on_qualified_stdlib_call_shows_its_signature() {
+        let source = "import std.Math;\nscene main { let x = Math.sin(90deg); }";
+        let sin_pos = source.find("sin").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..sin_pos], &source[sin_pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("sin(angle: Angle) -> Float"));
+    }
+
+    #[test]
+    fn hover_on_module_qualifier_shows_module_doc() {
+        let source = "import std.Color;\nscene main { let x = Color.rgb(1, 2, 3); }";
+        let pos = source.find("Color.rgb").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("module Color"));
+    }
+
+    #[test]
+    fn signature_help_reports_active_parameter_and_signature() {
+        let source = "import std.Color;\nscene main { let x = Color.rgb(255, ";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures.len(), 1);
+        assert!(help.signatures[0].label.starts_with("rgb(r: Int"));
+    }
+
+    #[test]
+    fn signature_help_lists_every_overload() {
+        let source = "import std.Math;\nscene main { let x = Math.abs(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 2);
+    }
+
+    #[test]
+    fn expected_type_understands_stdlib_call_arguments() {
+        let source = "import std.Math;\nscene main { let x = Math.sin(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let offset = analysis.document.map.offset(analysis.source(), position);
+        assert_eq!(
+            analysis.expected_type(offset),
+            Some(ExpectedType::exact(Type::Angle))
         );
     }
 

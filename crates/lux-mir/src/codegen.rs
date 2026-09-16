@@ -178,6 +178,16 @@ impl Builder {
                 });
                 -2
             }
+            MirInstruction::CallIntrinsic {
+                intrinsic,
+                arg_count,
+            } => {
+                code.push(Instruction::CallIntrinsic {
+                    intrinsic: to_bytecode_intrinsic(*intrinsic),
+                    arg_count: *arg_count,
+                });
+                1 - *arg_count as i8
+            }
         };
 
         if stack_delta > 0 {
@@ -212,6 +222,31 @@ fn to_bytecode_attribute(attribute: lux_typeck::Attribute) -> lux_bytecode::Attr
     match attribute {
         lux_typeck::Attribute::Intensity => lux_bytecode::Attribute::Intensity,
         lux_typeck::Attribute::Color => lux_bytecode::Attribute::Color,
+    }
+}
+
+/// The one boundary conversion between `lux-stdlib`'s compiler-side
+/// `IntrinsicId` and `lux-bytecode`'s independent, runtime-facing copy
+/// (see that type's module doc for why the duplication exists) — same
+/// idiom as `to_bytecode_attribute`/`to_value_type` just above.
+fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::IntrinsicId {
+    use lux_bytecode::IntrinsicId as B;
+    use lux_stdlib::IntrinsicId as S;
+    match id {
+        S::MathSin => B::MathSin,
+        S::MathCos => B::MathCos,
+        S::MathAbsInt => B::MathAbsInt,
+        S::MathAbsFloat => B::MathAbsFloat,
+        S::MathMinInt => B::MathMinInt,
+        S::MathMinFloat => B::MathMinFloat,
+        S::MathMaxInt => B::MathMaxInt,
+        S::MathMaxFloat => B::MathMaxFloat,
+        S::MathClampInt => B::MathClampInt,
+        S::MathClampFloat => B::MathClampFloat,
+        S::MathLerp => B::MathLerp,
+        S::ColorRgb => B::ColorRgb,
+        S::ColorMix => B::ColorMix,
+        S::ColorHsv => B::ColorHsv,
     }
 }
 

@@ -129,6 +129,17 @@ pub enum MirInstruction {
         target: lux_hir::TargetId,
         attribute: lux_typeck::Attribute,
     },
+    /// Calls one builtin stdlib intrinsic (`std.Math`, `std.Color`, ...).
+    /// `intrinsic` is `lux-stdlib`'s compiler-side id, reused directly
+    /// (MIR already depends on `lux-stdlib`, so redefining it here would
+    /// just be duplication, unlike the frontend/runtime boundary crossed
+    /// by `crate::codegen::to_bytecode_intrinsic`). Arguments are already
+    /// on the stack, evaluated left to right; net stack effect is
+    /// `1 - arg_count`.
+    CallIntrinsic {
+        intrinsic: lux_stdlib::IntrinsicId,
+        arg_count: u8,
+    },
 }
 
 /// A color value, normalized to RGB. `lux-hir`'s `ColorLiteral` can still

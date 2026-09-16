@@ -1,0 +1,3 @@
+scene main {
+    let x = Math.sin(90deg);
+}

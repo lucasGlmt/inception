@@ -1,0 +1,7 @@
+import std.Color;
+
+scene main {
+    let start = Color.mix(red, blue, 0.0);
+    let midpoint = Color.mix(red, blue, 0.5);
+    let end = Color.mix(red, blue, 1.0);
+}

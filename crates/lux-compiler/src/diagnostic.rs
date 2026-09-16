@@ -3,6 +3,8 @@
 //! [`crate::check`] get one `Vec<Diagnostic>` regardless of which stage
 //! failed.
 
+use std::path::PathBuf;
+
 use lux_syntax::{Span, SyntaxError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +28,12 @@ pub struct Diagnostic {
     pub span: Span,
     pub help: Option<String>,
     pub secondary_span: Option<Span>,
+    /// Which file this diagnostic belongs to, for a multi-file program
+    /// (see [`crate::check_program`]/[`crate::compile_program`]). `None`
+    /// for every diagnostic from the single-file [`crate::check`]/
+    /// [`crate::compile`] entry points — there's exactly one file, so
+    /// there's nothing to disambiguate.
+    pub source: Option<PathBuf>,
 }
 
 impl Diagnostic {
@@ -36,7 +44,16 @@ impl Diagnostic {
             span: Span::at(0),
             help: None,
             secondary_span: None,
+            source: None,
         }
+    }
+
+    /// Tags every diagnostic in `diagnostics` with `path`, so a caller
+    /// juggling several files (CLI, LSP) can tell which file each one
+    /// belongs to.
+    pub fn with_source(mut self, path: PathBuf) -> Self {
+        self.source = Some(path);
+        self
     }
 }
 
@@ -48,6 +65,7 @@ impl From<SyntaxError> for Diagnostic {
             span: err.span,
             help: err.help,
             secondary_span: None,
+            source: None,
         }
     }
 }
@@ -60,6 +78,7 @@ impl From<lux_hir::HirError> for Diagnostic {
             span: err.span,
             help: err.help,
             secondary_span: err.secondary_span,
+            source: None,
         }
     }
 }
@@ -72,6 +91,7 @@ impl From<lux_typeck::TypeError> for Diagnostic {
             span: err.span,
             help: err.help,
             secondary_span: err.secondary_span,
+            source: None,
         }
     }
 }
