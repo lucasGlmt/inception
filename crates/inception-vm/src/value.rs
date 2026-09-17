@@ -96,6 +96,9 @@ impl Value {
             (Attribute::Intensity, Value::Intensity(raw)) => {
                 Some(AttributeValue::Intensity(Intensity::new(raw)))
             }
+            (Attribute::Strobe, Value::Intensity(raw)) => {
+                Some(AttributeValue::Strobe(Intensity::new(raw)))
+            }
             (Attribute::Color, Value::Color(ColorValue { r, g, b })) => {
                 Some(AttributeValue::Color(Rgb {
                     red: r as u16 * 257,

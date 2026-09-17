@@ -32,6 +32,7 @@ fn linked_image_for(source: &str, fixtures: &[(String, UniverseId, u16)]) -> Run
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap();
@@ -102,6 +103,7 @@ fn linked_two_role_shared_signal_image() -> RuntimeImage {
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap();
@@ -450,6 +452,7 @@ fn failed_link_never_replaces_the_running_program() {
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap();
@@ -712,6 +715,7 @@ fn linked_front_image(source: &str, fixtures: &[(String, UniverseId, u16)]) -> R
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap();

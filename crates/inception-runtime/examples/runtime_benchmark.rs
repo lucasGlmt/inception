@@ -38,6 +38,7 @@ fn run_case(universe_count: u16, fixture_count: usize) {
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap();

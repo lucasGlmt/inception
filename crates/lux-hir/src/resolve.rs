@@ -149,6 +149,7 @@ fn lower_rig_contract(
             match capability.name.as_str() {
                 "Intensity" => capabilities.insert(Capability::Intensity),
                 "Color" => capabilities.insert(Capability::Color),
+                "Strobe" => capabilities.insert(Capability::Strobe),
                 _ => errors.push(HirError::new(
                     format!("unknown capability `{}`", capability.name),
                     capability.span,

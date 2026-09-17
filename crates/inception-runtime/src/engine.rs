@@ -107,6 +107,13 @@ impl LoadedProgram {
                 );
                 compatible = true;
             }
+            if old_fixture.strobe.is_some() && new_fixture.strobe.is_some() {
+                self.lighting.set_fixture_attribute(
+                    new_fixture.id,
+                    AttributeValue::Strobe(old.lighting.strobe(old_fixture.id)),
+                );
+                compatible = true;
+            }
             if compatible {
                 preserved += 1;
             }

@@ -105,7 +105,9 @@ impl TransitionEngine {
             }
             let from = match attribute {
                 Attribute::Intensity => AttributeValue::Intensity(state.intensity(fixture)),
-                Attribute::Color => return Err(TransitionError::UnsupportedAttribute(attribute)),
+                Attribute::Color | Attribute::Strobe => {
+                    return Err(TransitionError::UnsupportedAttribute(attribute));
+                }
             };
             self.active.insert(
                 key,

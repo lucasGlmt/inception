@@ -9,6 +9,7 @@ pub struct RoleId(pub u32);
 pub enum Capability {
     Intensity,
     Color,
+    Strobe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,13 +21,14 @@ impl CapabilitySet {
     }
 
     pub const fn from_bits(bits: u8) -> Self {
-        Self(bits & 0b11)
+        Self(bits & 0b111)
     }
 
     pub const fn contains(self, capability: Capability) -> bool {
         let bit = match capability {
             Capability::Intensity => 1,
             Capability::Color => 2,
+            Capability::Strobe => 4,
         };
         self.0 & bit != 0
     }
@@ -35,6 +37,7 @@ impl CapabilitySet {
         self.0 |= match capability {
             Capability::Intensity => 1,
             Capability::Color => 2,
+            Capability::Strobe => 4,
         };
     }
 
@@ -51,7 +54,7 @@ impl CapabilitySet {
     }
 
     pub fn iter(self) -> impl Iterator<Item = Capability> {
-        [Capability::Intensity, Capability::Color]
+        [Capability::Intensity, Capability::Color, Capability::Strobe]
             .into_iter()
             .filter(move |capability| self.contains(*capability))
     }

@@ -44,6 +44,7 @@ pub enum RoleCardinality {
 pub enum Capability {
     Intensity,
     Color,
+    Strobe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -58,6 +59,7 @@ impl CapabilitySet {
         self.0 |= match capability {
             Capability::Intensity => 1,
             Capability::Color => 2,
+            Capability::Strobe => 4,
         };
     }
 
@@ -65,6 +67,7 @@ impl CapabilitySet {
         let bit = match capability {
             Capability::Intensity => 1,
             Capability::Color => 2,
+            Capability::Strobe => 4,
         };
         self.0 & bit != 0
     }

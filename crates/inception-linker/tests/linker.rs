@@ -17,6 +17,7 @@ fn rgb_par() -> FixtureDefinition {
                 green: 2,
                 blue: 3,
             }),
+            strobe: None,
         },
     )
     .unwrap()
@@ -30,6 +31,7 @@ fn dimmer() -> FixtureDefinition {
         FixtureMappings {
             intensity: Some(0),
             color: None,
+            strobe: None,
         },
     )
     .unwrap()
@@ -82,6 +84,7 @@ fn fixture_definition_validates_capabilities_offsets_and_footprint() {
                 green: 1,
                 blue: 2,
             }),
+            strobe: None,
         },
     )
     .unwrap_err();
@@ -108,6 +111,52 @@ fn phase_a_resolves_exact_rgb_par_channels() {
         assert_eq!(color.green.get(), expected_base + 2);
         assert_eq!(color.blue.get(), expected_base + 3);
     }
+}
+
+#[test]
+fn strobe_capability_without_a_mapped_offset_is_rejected() {
+    let errors = FixtureDefinition::new(
+        "BrokenStrobe",
+        2,
+        capabilities(&[Capability::Intensity, Capability::Strobe]),
+        FixtureMappings {
+            intensity: Some(0),
+            color: None,
+            strobe: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        errors.contains(&FixtureDefinitionError::CapabilityMappingMismatch(
+            Capability::Strobe
+        ))
+    );
+}
+
+#[test]
+fn phase_a_resolves_the_strobe_channel() {
+    let definition = FixtureDefinition::new(
+        "StrobePar",
+        2,
+        capabilities(&[Capability::Intensity, Capability::Strobe]),
+        FixtureMappings {
+            intensity: Some(0),
+            color: None,
+            strobe: Some(1),
+        },
+    )
+    .unwrap();
+    let mut library = FixtureLibrary::new();
+    library.insert(definition);
+    let mut patch = Patch::new("DemoVenue");
+    patch
+        .add_fixture("strobe_1", "StrobePar", UniverseId(1), 10)
+        .unwrap();
+
+    let resolved = resolve_patch(&library, &patch).unwrap();
+    let strobe = resolved.fixtures[0].mapping.strobe.unwrap();
+    assert_eq!(strobe.universe, UniverseId(1));
+    assert_eq!(strobe.channel.get(), 11);
 }
 
 #[test]

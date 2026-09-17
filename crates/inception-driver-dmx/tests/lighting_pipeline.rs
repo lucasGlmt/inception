@@ -62,6 +62,7 @@ fn washes_two_fixtures_one_universe() -> TestRig {
                     channel: DmxChannel::new(1).unwrap(),
                 }),
                 color: None,
+                strobe: None,
             },
             ResolvedFixture {
                 id: FixtureId(1),
@@ -70,6 +71,7 @@ fn washes_two_fixtures_one_universe() -> TestRig {
                     channel: DmxChannel::new(5).unwrap(),
                 }),
                 color: None,
+                strobe: None,
             },
         ],
     };

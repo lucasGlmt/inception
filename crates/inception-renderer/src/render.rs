@@ -52,6 +52,14 @@ pub fn render(
             frame.set(mapping.green, u16_to_dmx8(color.green));
             frame.set(mapping.blue, u16_to_dmx8(color.blue));
         }
+
+        if let Some(mapping) = fixture.strobe {
+            let value = u16_to_dmx8(state.strobe(fixture.id).raw());
+            output
+                .entry(mapping.universe)
+                .or_insert_with(UniverseFrame::black)
+                .set(mapping.channel, value);
+        }
     }
 }
 
@@ -79,6 +87,7 @@ mod tests {
                         channel: channel(1),
                     }),
                     color: None,
+                    strobe: None,
                 },
                 ResolvedFixture {
                     id: FixtureId(1),
@@ -87,6 +96,7 @@ mod tests {
                         channel: channel(5),
                     }),
                     color: None,
+                    strobe: None,
                 },
             ],
         };
@@ -132,6 +142,7 @@ mod tests {
                         channel: channel(1),
                     }),
                     color: None,
+                    strobe: None,
                 },
                 ResolvedFixture {
                     id: FixtureId(1),
@@ -140,6 +151,7 @@ mod tests {
                         channel: channel(1),
                     }),
                     color: None,
+                    strobe: None,
                 },
             ],
         };
@@ -168,6 +180,7 @@ mod tests {
                     green: channel(2),
                     blue: channel(3),
                 }),
+                strobe: None,
             }],
         };
 
@@ -191,6 +204,41 @@ mod tests {
     }
 
     #[test]
+    fn strobe_attribute_lands_on_its_own_channel_independent_of_intensity() {
+        let rig = ResolvedRig {
+            fixtures: vec![ResolvedFixture {
+                id: FixtureId(0),
+                intensity: Some(DmxChannelMapping {
+                    universe: UniverseId(1),
+                    channel: channel(1),
+                }),
+                color: None,
+                strobe: Some(DmxChannelMapping {
+                    universe: UniverseId(1),
+                    channel: channel(2),
+                }),
+            }],
+        };
+
+        let mut state = LightingState::new();
+        state.set_fixture_attribute(FixtureId(0), AttributeValue::Intensity(Intensity::MAX));
+        state.set_fixture_attribute(
+            FixtureId(0),
+            AttributeValue::Strobe(Intensity::from_percent(50).unwrap()),
+        );
+
+        let mut output = HashMap::new();
+        render(&state, &rig, &mut output);
+
+        let frame = &output[&UniverseId(1)];
+        assert_eq!(frame[0], 255);
+        assert_eq!(
+            frame[1],
+            crate::convert::intensity_to_dmx8(Intensity::from_percent(50).unwrap())
+        );
+    }
+
+    #[test]
     fn rendering_is_deterministic_across_runs() {
         let rig = ResolvedRig {
             fixtures: vec![ResolvedFixture {
@@ -200,6 +248,7 @@ mod tests {
                     channel: channel(1),
                 }),
                 color: None,
+                strobe: None,
             }],
         };
         let mut state = LightingState::new();

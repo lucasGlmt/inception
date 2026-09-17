@@ -585,6 +585,7 @@ impl Vm {
         let core_attribute = match attribute {
             lux_bytecode::Attribute::Intensity => inception_core::Attribute::Intensity,
             lux_bytecode::Attribute::Color => inception_core::Attribute::Color,
+            lux_bytecode::Attribute::Strobe => inception_core::Attribute::Strobe,
         };
         let fixtures = lighting
             .target_fixtures(core_target)

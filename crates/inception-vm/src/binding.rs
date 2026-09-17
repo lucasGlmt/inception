@@ -197,6 +197,7 @@ fn to_attribute_value(
     let bytecode_attribute = match attribute {
         Attribute::Intensity => lux_bytecode::Attribute::Intensity,
         Attribute::Color => lux_bytecode::Attribute::Color,
+        Attribute::Strobe => lux_bytecode::Attribute::Strobe,
     };
     value.into_attribute_value(bytecode_attribute)
 }

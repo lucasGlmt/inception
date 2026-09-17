@@ -45,6 +45,7 @@ pub struct LightingState {
     targets: HashMap<TargetId, ResolvedTarget>,
     intensities: HashMap<FixtureId, Intensity>,
     colors: HashMap<FixtureId, Rgb>,
+    strobes: HashMap<FixtureId, Intensity>,
 }
 
 impl LightingState {
@@ -85,6 +86,9 @@ impl LightingState {
                 AttributeValue::Color(c) => {
                     self.colors.insert(fixture, c);
                 }
+                AttributeValue::Strobe(s) => {
+                    self.strobes.insert(fixture, s);
+                }
             }
         }
         Ok(())
@@ -101,6 +105,9 @@ impl LightingState {
             AttributeValue::Color(c) => {
                 self.colors.insert(fixture, c);
             }
+            AttributeValue::Strobe(s) => {
+                self.strobes.insert(fixture, s);
+            }
         }
     }
 
@@ -116,6 +123,14 @@ impl LightingState {
     /// `Rgb::BLACK` if `fixture` was never set.
     pub fn color(&self, fixture: FixtureId) -> Rgb {
         self.colors.get(&fixture).copied().unwrap_or(Rgb::BLACK)
+    }
+
+    /// `Intensity::ZERO` (no strobing) if `fixture` was never set.
+    pub fn strobe(&self, fixture: FixtureId) -> Intensity {
+        self.strobes
+            .get(&fixture)
+            .copied()
+            .unwrap_or(Intensity::ZERO)
     }
 }
 
@@ -165,6 +180,23 @@ mod tests {
         let state = LightingState::new();
         assert_eq!(state.intensity(FixtureId(0)), Intensity::ZERO);
         assert_eq!(state.color(FixtureId(0)), Rgb::BLACK);
+        assert_eq!(state.strobe(FixtureId(0)), Intensity::ZERO);
+    }
+
+    #[test]
+    fn strobe_is_tracked_independently_of_intensity() {
+        let mut state = LightingState::new();
+        state.set_fixture_attribute(FixtureId(0), AttributeValue::Intensity(Intensity::MAX));
+        state.set_fixture_attribute(
+            FixtureId(0),
+            AttributeValue::Strobe(Intensity::from_percent(50).unwrap()),
+        );
+
+        assert_eq!(state.intensity(FixtureId(0)), Intensity::MAX);
+        assert_eq!(
+            state.strobe(FixtureId(0)),
+            Intensity::from_percent(50).unwrap()
+        );
     }
 
     #[test]
@@ -192,6 +224,10 @@ mod tests {
         assert_eq!(
             AttributeValue::Color(Rgb::BLACK).attribute(),
             Attribute::Color
+        );
+        assert_eq!(
+            AttributeValue::Strobe(Intensity::ZERO).attribute(),
+            Attribute::Strobe
         );
     }
 }

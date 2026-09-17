@@ -1070,6 +1070,7 @@ fn capability(name: &str) -> Option<Capability> {
     match name {
         "Intensity" => Some(Capability::Intensity),
         "Color" => Some(Capability::Color),
+        "Strobe" => Some(Capability::Strobe),
         _ => None,
     }
 }

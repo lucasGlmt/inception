@@ -30,6 +30,7 @@ fn rgb_library() -> FixtureLibrary {
                 green: 2,
                 blue: 3,
             }),
+            strobe: None,
         },
     )
     .unwrap();

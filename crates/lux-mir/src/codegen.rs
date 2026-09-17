@@ -229,6 +229,7 @@ fn to_bytecode_attribute(attribute: lux_typeck::Attribute) -> lux_bytecode::Attr
     match attribute {
         lux_typeck::Attribute::Intensity => lux_bytecode::Attribute::Intensity,
         lux_typeck::Attribute::Color => lux_bytecode::Attribute::Color,
+        lux_typeck::Attribute::Strobe => lux_bytecode::Attribute::Strobe,
     }
 }
 

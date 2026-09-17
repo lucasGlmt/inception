@@ -14,15 +14,18 @@ use crate::types::Type;
 pub enum Attribute {
     Intensity,
     Color,
+    Strobe,
 }
 
 impl Attribute {
-    pub const ALL: &'static [Attribute] = &[Attribute::Intensity, Attribute::Color];
+    pub const ALL: &'static [Attribute] =
+        &[Attribute::Intensity, Attribute::Color, Attribute::Strobe];
 
     pub fn name(self) -> &'static str {
         match self {
             Attribute::Intensity => "intensity",
             Attribute::Color => "color",
+            Attribute::Strobe => "strobe",
         }
     }
 
@@ -34,10 +37,18 @@ impl Attribute {
     }
 
     /// The type an assignment to this attribute must produce.
+    ///
+    /// `Strobe` reuses `Intensity` (`0%..=100%`, no strobe rate/frequency):
+    /// a strobe's actual flash rate is fixture-specific DMX behavior that
+    /// varies per projector model, so V1 exposes it as a percentage-driven
+    /// speed/duty knob rather than a `Frequency`/`Hz` value it can't map
+    /// consistently across hardware — see `AGENTS.md`'s "hardware-independent
+    /// show code" principle.
     pub fn value_type(self) -> Type {
         match self {
             Attribute::Intensity => Type::Intensity,
             Attribute::Color => Type::Color,
+            Attribute::Strobe => Type::Intensity,
         }
     }
 
@@ -47,6 +58,7 @@ impl Attribute {
         match self {
             Attribute::Intensity => lux_hir::Capability::Intensity,
             Attribute::Color => lux_hir::Capability::Color,
+            Attribute::Strobe => lux_hir::Capability::Strobe,
         }
     }
 }
@@ -77,5 +89,6 @@ mod tests {
     fn value_types_match_the_attribute() {
         assert_eq!(Attribute::Intensity.value_type(), Type::Intensity);
         assert_eq!(Attribute::Color.value_type(), Type::Color);
+        assert_eq!(Attribute::Strobe.value_type(), Type::Intensity);
     }
 }

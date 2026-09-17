@@ -35,6 +35,7 @@ pub struct ResolvedFixture {
     pub id: FixtureId,
     pub intensity: Option<DmxChannelMapping>,
     pub color: Option<RgbChannelMapping>,
+    pub strobe: Option<DmxChannelMapping>,
 }
 
 /// The whole show's resolved physical mapping — what a future

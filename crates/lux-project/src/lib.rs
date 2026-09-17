@@ -440,6 +440,7 @@ struct MappingRecord {
     red: Option<u16>,
     green: Option<u16>,
     blue: Option<u16>,
+    strobe: Option<u16>,
 }
 
 fn load_fixture_library(directory: &Path) -> Result<FixtureLibrary, ProjectError> {
@@ -470,6 +471,7 @@ fn load_fixture_library(directory: &Path) -> Result<FixtureLibrary, ProjectError
             capabilities.push(match capability.as_str() {
                 "Intensity" | "intensity" => Capability::Intensity,
                 "Color" | "color" => Capability::Color,
+                "Strobe" | "strobe" => Capability::Strobe,
                 other => {
                     return Err(ProjectError::InvalidManifest(vec![format!(
                         "unknown fixture capability `{other}` in {}",
@@ -499,6 +501,7 @@ fn load_fixture_library(directory: &Path) -> Result<FixtureLibrary, ProjectError
             FixtureMappings {
                 intensity: config.mapping.intensity,
                 color,
+                strobe: config.mapping.strobe,
             },
         )
         .map_err(|errors| ProjectError::FixtureDefinition {

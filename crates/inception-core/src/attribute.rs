@@ -12,6 +12,7 @@ use crate::intensity::Intensity;
 pub enum Attribute {
     Intensity,
     Color,
+    Strobe,
 }
 
 /// A typed attribute value. Pairing the attribute with its value in one
@@ -20,10 +21,17 @@ pub enum Attribute {
 /// 7's explicit worry — impossible to construct in the first place: there
 /// is no `AttributeValue` variant that lets a `Color` masquerade as an
 /// `Intensity`.
+///
+/// `Strobe` carries an `Intensity` too — same `0%..=100%` domain, read as
+/// a strobe speed/duty knob rather than a light level. A distinct variant
+/// (not a reuse of `AttributeValue::Intensity`) keeps it a separate
+/// `(fixture, attribute)` slot in `LightingState`, so setting a fixture's
+/// strobe never overwrites its dimmer level or vice versa.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AttributeValue {
     Intensity(Intensity),
     Color(Rgb),
+    Strobe(Intensity),
 }
 
 impl AttributeValue {
@@ -31,6 +39,7 @@ impl AttributeValue {
         match self {
             AttributeValue::Intensity(_) => Attribute::Intensity,
             AttributeValue::Color(_) => Attribute::Color,
+            AttributeValue::Strobe(_) => Attribute::Strobe,
         }
     }
 }

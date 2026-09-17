@@ -44,6 +44,8 @@ pub struct FixtureMappings {
     /// Zero-based offset relative to the fixture's one-based DMX address.
     pub intensity: Option<u16>,
     pub color: Option<RgbOffsets>,
+    /// Zero-based offset relative to the fixture's one-based DMX address.
+    pub strobe: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,12 +85,20 @@ impl FixtureDefinition {
                 Capability::Color,
             ));
         }
+        if capabilities.contains(Capability::Strobe) != mappings.strobe.is_some() {
+            errors.push(FixtureDefinitionError::CapabilityMappingMismatch(
+                Capability::Strobe,
+            ));
+        }
         let mut offsets = Vec::new();
         if let Some(offset) = mappings.intensity {
             offsets.push(offset);
         }
         if let Some(rgb) = mappings.color {
             offsets.extend([rgb.red, rgb.green, rgb.blue]);
+        }
+        if let Some(offset) = mappings.strobe {
+            offsets.push(offset);
         }
         for &offset in &offsets {
             if offset >= footprint {
@@ -363,6 +373,10 @@ pub fn resolve_patch(
             green: channel(offsets.green),
             blue: channel(offsets.blue),
         });
+        let strobe = definition.mappings.strobe.map(|offset| DmxChannelMapping {
+            universe: instance.universe,
+            channel: channel(offset),
+        });
         let id = FixtureId(index as u32);
         fixtures.push(ResolvedPhysicalFixture {
             id,
@@ -373,6 +387,7 @@ pub fn resolve_patch(
                 id,
                 intensity,
                 color,
+                strobe,
             },
             universe: instance.universe,
             first_channel: channel(0),

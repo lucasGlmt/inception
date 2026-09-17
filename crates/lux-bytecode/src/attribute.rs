@@ -10,6 +10,7 @@ use crate::value::{ScalarValueType, ValueType};
 pub enum Attribute {
     Intensity,
     Color,
+    Strobe,
 }
 
 impl Attribute {
@@ -18,6 +19,7 @@ impl Attribute {
         match self {
             Attribute::Intensity => ValueType::Intensity,
             Attribute::Color => ValueType::Color,
+            Attribute::Strobe => ValueType::Intensity,
         }
     }
 
@@ -28,6 +30,7 @@ impl Attribute {
         match self {
             Attribute::Intensity => ValueType::Signal(ScalarValueType::Intensity),
             Attribute::Color => ValueType::Signal(ScalarValueType::Color),
+            Attribute::Strobe => ValueType::Signal(ScalarValueType::Intensity),
         }
     }
 }
