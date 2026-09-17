@@ -323,17 +323,96 @@ static EFFECTS_SQUARE: Signature = Signature {
           greater than zero. The oscillator's origin (`phase == 0`) is the timestamp it was created at.",
 };
 
-static EFFECTS_FUNCTIONS: &[Signature] =
-    &[EFFECTS_SINE, EFFECTS_TRIANGLE, EFFECTS_SAW, EFFECTS_SQUARE];
+static EFFECTS_STEP_INT: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "step",
+    params: &[param!("sequence": SequenceInt), param!("every": Duration)],
+    return_ty: ParamType::SignalInt,
+    intrinsic: IntrinsicId::EffectsStepInt,
+    pure: false,
+    doc: "step<T>(sequence: Sequence<T>, every: Duration) -> Signal<T> — steps through \
+          `sequence`'s elements at a strictly time-based cadence: `index = floor(elapsed / \
+          every) % sequence.length`, looping indefinitely. `every` must be greater than zero. \
+          The signal's origin (`elapsed == 0`) is the timestamp `step(...)` was called at.",
+};
+
+static EFFECTS_STEP_FLOAT: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "step",
+    params: &[param!("sequence": SequenceFloat), param!("every": Duration)],
+    return_ty: ParamType::SignalFloat,
+    intrinsic: IntrinsicId::EffectsStepFloat,
+    pure: false,
+    doc: "step<T>(sequence: Sequence<T>, every: Duration) -> Signal<T> — steps through \
+          `sequence`'s elements at a strictly time-based cadence: `index = floor(elapsed / \
+          every) % sequence.length`, looping indefinitely. `every` must be greater than zero. \
+          The signal's origin (`elapsed == 0`) is the timestamp `step(...)` was called at.",
+};
+
+static EFFECTS_STEP_ANGLE: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "step",
+    params: &[param!("sequence": SequenceAngle), param!("every": Duration)],
+    return_ty: ParamType::SignalAngle,
+    intrinsic: IntrinsicId::EffectsStepAngle,
+    pure: false,
+    doc: "step<T>(sequence: Sequence<T>, every: Duration) -> Signal<T> — steps through \
+          `sequence`'s elements at a strictly time-based cadence: `index = floor(elapsed / \
+          every) % sequence.length`, looping indefinitely. `every` must be greater than zero. \
+          The signal's origin (`elapsed == 0`) is the timestamp `step(...)` was called at.",
+};
+
+static EFFECTS_STEP_INTENSITY: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "step",
+    params: &[
+        param!("sequence": SequenceIntensity),
+        param!("every": Duration),
+    ],
+    return_ty: ParamType::SignalIntensity,
+    intrinsic: IntrinsicId::EffectsStepIntensity,
+    pure: false,
+    doc: "step<T>(sequence: Sequence<T>, every: Duration) -> Signal<T> — steps through \
+          `sequence`'s elements at a strictly time-based cadence: `index = floor(elapsed / \
+          every) % sequence.length`, looping indefinitely. `every` must be greater than zero. \
+          The signal's origin (`elapsed == 0`) is the timestamp `step(...)` was called at.",
+};
+
+static EFFECTS_STEP_COLOR: Signature = Signature {
+    module_path: &["std", "Effects"],
+    name: "step",
+    params: &[param!("sequence": SequenceColor), param!("every": Duration)],
+    return_ty: ParamType::SignalColor,
+    intrinsic: IntrinsicId::EffectsStepColor,
+    pure: false,
+    doc: "step<T>(sequence: Sequence<T>, every: Duration) -> Signal<T> — steps through \
+          `sequence`'s elements at a strictly time-based cadence: `index = floor(elapsed / \
+          every) % sequence.length`, looping indefinitely. `every` must be greater than zero. \
+          The signal's origin (`elapsed == 0`) is the timestamp `step(...)` was called at.",
+};
+
+static EFFECTS_FUNCTIONS: &[Signature] = &[
+    EFFECTS_SINE,
+    EFFECTS_TRIANGLE,
+    EFFECTS_SAW,
+    EFFECTS_SQUARE,
+    EFFECTS_STEP_INT,
+    EFFECTS_STEP_FLOAT,
+    EFFECTS_STEP_ANGLE,
+    EFFECTS_STEP_INTENSITY,
+    EFFECTS_STEP_COLOR,
+];
 
 static EFFECTS: StdModule = StdModule {
     path: &["std", "Effects"],
     short_name: "Effects",
     functions: EFFECTS_FUNCTIONS,
-    doc: "Time-varying oscillators: each function returns a `Signal<Float>` normalized to `0.0..1.0`, \
-          whose value depends only on absolute time — never on a frame count or tick delta. Unlike \
-          `std.Math`/`std.Color`, these are not pure functions of their arguments alone: each call \
-          captures the current runtime clock as the oscillator's time origin.",
+    doc: "Time-varying signals: `sine`/`triangle`/`saw`/`square` each return a `Signal<Float>` \
+          normalized to `0.0..1.0`; `step` returns a `Signal<T>` that discretely steps through a \
+          `Sequence<T>`. Every one of these depends only on absolute time — never on a frame \
+          count or tick delta. Unlike `std.Math`/`std.Color`, these are not pure functions of \
+          their arguments alone: each call captures the current runtime clock as the signal's \
+          time origin.",
 };
 
 static SEQUENCE_OF_INT: Signature = Signature {
@@ -658,9 +737,13 @@ mod tests {
 
     #[test]
     fn effects_module_exposes_all_four_oscillators() {
-        let names: Vec<_> = EFFECTS_FUNCTIONS.iter().map(|s| s.name).collect();
-        assert_eq!(names, ["sine", "triangle", "saw", "square"]);
-        for sig in EFFECTS_FUNCTIONS {
+        let oscillators: Vec<_> = EFFECTS_FUNCTIONS
+            .iter()
+            .filter(|s| s.name != "step")
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(oscillators, ["sine", "triangle", "saw", "square"]);
+        for sig in EFFECTS_FUNCTIONS.iter().filter(|s| s.name != "step") {
             assert_eq!(
                 sig.params,
                 &[Param {
@@ -670,5 +753,63 @@ mod tests {
             );
             assert_eq!(sig.return_ty, ParamType::SignalFloat);
         }
+    }
+
+    #[test]
+    fn effects_step_resolves_per_element_type() {
+        let cases = [
+            (
+                ParamType::SequenceInt,
+                IntrinsicId::EffectsStepInt,
+                ParamType::SignalInt,
+            ),
+            (
+                ParamType::SequenceFloat,
+                IntrinsicId::EffectsStepFloat,
+                ParamType::SignalFloat,
+            ),
+            (
+                ParamType::SequenceAngle,
+                IntrinsicId::EffectsStepAngle,
+                ParamType::SignalAngle,
+            ),
+            (
+                ParamType::SequenceIntensity,
+                IntrinsicId::EffectsStepIntensity,
+                ParamType::SignalIntensity,
+            ),
+            (
+                ParamType::SequenceColor,
+                IntrinsicId::EffectsStepColor,
+                ParamType::SignalColor,
+            ),
+        ];
+        for (sequence_ty, intrinsic, return_ty) in cases {
+            let sig = resolve_overload(
+                &["std", "Effects"],
+                "step",
+                &[sequence_ty, ParamType::Duration],
+            )
+            .unwrap();
+            assert_eq!(sig.intrinsic, intrinsic);
+            assert_eq!(sig.return_ty, return_ty);
+        }
+    }
+
+    #[test]
+    fn effects_step_has_five_overloads() {
+        assert_eq!(candidates(&["std", "Effects"], "step").len(), 5);
+    }
+
+    #[test]
+    fn effects_step_rejects_a_non_sequence_first_argument() {
+        assert_eq!(
+            resolve_overload(
+                &["std", "Effects"],
+                "step",
+                &[ParamType::Color, ParamType::Duration]
+            ),
+            Err(OverloadError::NoMatchingOverload)
+        );
     }
 }

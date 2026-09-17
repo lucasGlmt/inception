@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    let bad = Effects.step(red, 500ms);
+}

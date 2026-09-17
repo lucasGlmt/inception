@@ -92,20 +92,21 @@ static SIGNAL_PHASE: Signature = Signature {
           `docs/stdlib/Signal.md`.",
 };
 
-static SIGNAL_SPREAD: Signature = Signature {
+static SIGNAL_SPREAD_FLOAT: Signature = Signature {
     module_path: &["Signal<Float>"],
     name: "spread",
     params: &[param!("amount": Angle)],
     return_ty: ParamType::SignalFloat,
-    intrinsic: IntrinsicId::SignalSpread,
+    intrinsic: IntrinsicId::SignalSpreadFloat,
     pure: true,
     doc: "spread(amount: Angle) -> Signal<Float> — distributes `amount` as a phase offset \
           across a fixture group: fixture `i` of `n` gets `amount * i / n` added to its own \
           sampled phase (not `n - 1`, so a full `360deg` spread never puts the first and last \
           fixture back in phase). Only meaningful once bound to a multi-fixture target with \
-          `<-` — outside a binding (`fixture_count == 1`), every fixture reads offset `0`. Same \
-          receiver restriction as `.phase()`: only valid directly on an `Effects` oscillator, or \
-          on a `.phase(...)` call chained from one (not chainable with another `.spread(...)`).",
+          `<-` — outside a binding (`fixture_count == 1`), every fixture reads offset `0`. Valid \
+          directly on an `Effects` oscillator, on a `.phase(...)` call chained from one (not \
+          chainable with another `.spread(...)`), or directly on an `Effects.step(...)` signal \
+          (any element type — see the non-`Float` `SIGNAL_SPREAD_*` signatures below).",
 };
 
 static SIGNAL_INVERT: Signature = Signature {
@@ -127,7 +128,7 @@ pub static SIGNAL_FLOAT_METHODS: &[Signature] = &[
     SIGNAL_RANGE_INTENSITY,
     SIGNAL_RANGE_ANGLE,
     SIGNAL_PHASE,
-    SIGNAL_SPREAD,
+    SIGNAL_SPREAD_FLOAT,
     SIGNAL_INVERT,
 ];
 
@@ -156,6 +157,136 @@ pub fn resolve_signal_float_method(
     arg_types: &[ParamType],
 ) -> Result<&'static Signature, OverloadError> {
     let by_name = signal_float_method_candidates(name);
+    if by_name.is_empty() {
+        return Err(OverloadError::UnknownMember);
+    }
+    let exact: Vec<&'static Signature> = by_name
+        .iter()
+        .filter(|sig| sig.params.len() == arg_types.len())
+        .filter(|sig| {
+            sig.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|(p, a)| p.ty == *a)
+        })
+        .collect();
+    match exact.len() {
+        0 => {
+            let arities: Vec<usize> = by_name.iter().map(Signature::arity).collect();
+            if arities.contains(&arg_types.len()) {
+                Err(OverloadError::NoMatchingOverload)
+            } else {
+                Err(OverloadError::ArityMismatch {
+                    expected_arities: arities,
+                    found: arg_types.len(),
+                })
+            }
+        }
+        1 => Ok(exact[0]),
+        _ => Err(OverloadError::Ambiguous(exact)),
+    }
+}
+
+/// `.spread()` on a non-`Float` `Signal<T>` — i.e. one built from
+/// `Effects.step(sequence: Sequence<T>, ...)` for `T` in `{Int, Angle,
+/// Intensity, Color}`. Unlike `Signal<Float>`'s full method set
+/// (`range`/`phase`/`spread`/`invert`, all in [`SIGNAL_FLOAT_METHODS`]),
+/// `.spread()` is the *only* method these element types support:
+/// `.range()`/`.phase()`/`.invert()` stay meaningless (and thus
+/// unsupported) for anything but a continuous `0.0..1.0` `Float` signal —
+/// see item 9/10 of the `Effects.step` task brief for why `.spread()`
+/// specifically generalizes to a discrete `Step` signal (a time-offset
+/// within the sequence's full cycle) where the others don't.
+static SIGNAL_SPREAD_INT: Signature = Signature {
+    module_path: &["Signal<Int>"],
+    name: "spread",
+    params: &[param!("amount": Angle)],
+    return_ty: ParamType::SignalInt,
+    intrinsic: IntrinsicId::SignalSpreadInt,
+    pure: true,
+    doc: "spread(amount: Angle) -> Signal<Int> — on an `Effects.step(...)` signal, distributes \
+          `amount` as a time offset within the sequence's full cycle (`every * length`): \
+          fixture `i` of `n` gets `amount * i / n` of that cycle added to its own sampled \
+          position. Only meaningful once bound to a multi-fixture target with `<-`.",
+};
+
+static SIGNAL_SPREAD_ANGLE: Signature = Signature {
+    module_path: &["Signal<Angle>"],
+    name: "spread",
+    params: &[param!("amount": Angle)],
+    return_ty: ParamType::SignalAngle,
+    intrinsic: IntrinsicId::SignalSpreadAngle,
+    pure: true,
+    doc: "spread(amount: Angle) -> Signal<Angle> — on an `Effects.step(...)` signal, distributes \
+          `amount` as a time offset within the sequence's full cycle (`every * length`): \
+          fixture `i` of `n` gets `amount * i / n` of that cycle added to its own sampled \
+          position. Only meaningful once bound to a multi-fixture target with `<-`.",
+};
+
+static SIGNAL_SPREAD_INTENSITY: Signature = Signature {
+    module_path: &["Signal<Intensity>"],
+    name: "spread",
+    params: &[param!("amount": Angle)],
+    return_ty: ParamType::SignalIntensity,
+    intrinsic: IntrinsicId::SignalSpreadIntensity,
+    pure: true,
+    doc: "spread(amount: Angle) -> Signal<Intensity> — on an `Effects.step(...)` signal, \
+          distributes `amount` as a time offset within the sequence's full cycle \
+          (`every * length`): fixture `i` of `n` gets `amount * i / n` of that cycle added to \
+          its own sampled position. Only meaningful once bound to a multi-fixture target with \
+          `<-`.",
+};
+
+static SIGNAL_SPREAD_COLOR: Signature = Signature {
+    module_path: &["Signal<Color>"],
+    name: "spread",
+    params: &[param!("amount": Angle)],
+    return_ty: ParamType::SignalColor,
+    intrinsic: IntrinsicId::SignalSpreadColor,
+    pure: true,
+    doc: "spread(amount: Angle) -> Signal<Color> — on an `Effects.step(...)` signal, distributes \
+          `amount` as a time offset within the sequence's full cycle (`every * length`): \
+          fixture `i` of `n` gets `amount * i / n` of that cycle added to its own sampled \
+          position. Only meaningful once bound to a multi-fixture target with `<-`.",
+};
+
+fn non_float_signal_spread_for(receiver: ParamType) -> &'static [Signature] {
+    match receiver {
+        ParamType::SignalInt => std::slice::from_ref(&SIGNAL_SPREAD_INT),
+        ParamType::SignalAngle => std::slice::from_ref(&SIGNAL_SPREAD_ANGLE),
+        ParamType::SignalIntensity => std::slice::from_ref(&SIGNAL_SPREAD_INTENSITY),
+        ParamType::SignalColor => std::slice::from_ref(&SIGNAL_SPREAD_COLOR),
+        _ => &[],
+    }
+}
+
+/// Every overload named `name` on a non-`Float` `Signal<T>` receiver
+/// tagged `receiver` — the counterpart to [`signal_float_method_candidates`]
+/// for the other 4 element types, which only ever have `.spread()`.
+pub fn non_float_signal_method_candidates(receiver: ParamType, name: &str) -> &'static [Signature] {
+    let methods = non_float_signal_spread_for(receiver);
+    let Some(start) = methods.iter().position(|s| s.name == name) else {
+        return &[];
+    };
+    let len = methods[start..]
+        .iter()
+        .take_while(|s| s.name == name)
+        .count();
+    &methods[start..start + len]
+}
+
+/// Resolves `.name(arg_types)` on a non-`Float` `Signal<T>` receiver
+/// tagged `receiver` — the counterpart to [`resolve_signal_float_method`]
+/// for the other 4 element types.
+pub fn resolve_non_float_signal_method(
+    receiver: ParamType,
+    name: &str,
+    arg_types: &[ParamType],
+) -> Result<&'static Signature, OverloadError> {
+    if non_float_signal_spread_for(receiver).is_empty() {
+        return Err(OverloadError::UnknownModule);
+    }
+    let by_name = non_float_signal_method_candidates(receiver, name);
     if by_name.is_empty() {
         return Err(OverloadError::UnknownMember);
     }
@@ -368,7 +499,7 @@ mod tests {
         let phase = resolve_signal_float_method("phase", &[ParamType::Angle]).unwrap();
         assert_eq!(phase.intrinsic, IntrinsicId::SignalPhase);
         let spread = resolve_signal_float_method("spread", &[ParamType::Angle]).unwrap();
-        assert_eq!(spread.intrinsic, IntrinsicId::SignalSpread);
+        assert_eq!(spread.intrinsic, IntrinsicId::SignalSpreadFloat);
         assert_eq!(spread.return_ty, ParamType::SignalFloat);
         let invert = resolve_signal_float_method("invert", &[]).unwrap();
         assert_eq!(invert.intrinsic, IntrinsicId::SignalInvert);
@@ -450,6 +581,44 @@ mod tests {
     fn non_sequence_receiver_is_unknown_module() {
         assert_eq!(
             resolve_sequence_method(ParamType::Int, "length", &[]),
+            Err(OverloadError::UnknownModule)
+        );
+    }
+
+    #[test]
+    fn non_float_signal_spread_resolves_per_element_type() {
+        let cases = [
+            (ParamType::SignalInt, IntrinsicId::SignalSpreadInt),
+            (ParamType::SignalAngle, IntrinsicId::SignalSpreadAngle),
+            (
+                ParamType::SignalIntensity,
+                IntrinsicId::SignalSpreadIntensity,
+            ),
+            (ParamType::SignalColor, IntrinsicId::SignalSpreadColor),
+        ];
+        for (receiver, intrinsic) in cases {
+            let sig =
+                resolve_non_float_signal_method(receiver, "spread", &[ParamType::Angle]).unwrap();
+            assert_eq!(sig.intrinsic, intrinsic);
+        }
+    }
+
+    #[test]
+    fn non_float_signal_only_supports_spread() {
+        assert_eq!(
+            resolve_non_float_signal_method(ParamType::SignalColor, "range", &[]),
+            Err(OverloadError::UnknownMember)
+        );
+        assert_eq!(
+            resolve_non_float_signal_method(ParamType::SignalColor, "invert", &[]),
+            Err(OverloadError::UnknownMember)
+        );
+    }
+
+    #[test]
+    fn signal_float_receiver_is_unknown_module_for_non_float_table() {
+        assert_eq!(
+            resolve_non_float_signal_method(ParamType::SignalFloat, "spread", &[ParamType::Angle]),
             Err(OverloadError::UnknownModule)
         );
     }

@@ -296,6 +296,12 @@ impl AnalysisSnapshot {
             if self.receiver_sequence_element(offset, receiver).is_some() {
                 return sequence_method_completions(prefix);
             }
+            // A non-`Float` `Signal<T>` receiver (only reachable via
+            // `Effects.step(...)`) only has `.spread()` — see
+            // `receiver_signal_element`.
+            if self.receiver_signal_element(offset, receiver).is_some() {
+                return non_float_signal_method_completions(prefix);
+            }
             return self
                 .role_members(receiver)
                 .into_iter()
@@ -461,10 +467,15 @@ impl AnalysisSnapshot {
             lux_stdlib::candidates(module.path, name)
         } else if self.receiver_is_signal_float(offset, qualifier) {
             lux_stdlib::signal_float_method_candidates(name)
-        } else {
-            let elem = self.receiver_sequence_element(offset, qualifier)?;
+        } else if let Some(elem) = self.receiver_sequence_element(offset, qualifier) {
             lux_stdlib::sequence_method_candidates(
                 lux_typeck::stdlib_bridge::sequence_element_param_type(elem),
+                name,
+            )
+        } else {
+            let elem = self.receiver_signal_element(offset, qualifier)?;
+            lux_stdlib::non_float_signal_method_candidates(
+                lux_typeck::stdlib_bridge::signal_element_param_type(elem),
                 name,
             )
         };
@@ -654,6 +665,27 @@ impl AnalysisSnapshot {
         }
     }
 
+    /// The `SignalElement` a receiver resolves to, if it's a non-`Float`
+    /// `Signal<T>` (only reachable via `Effects.step(...)`) — the
+    /// counterpart to `receiver_sequence_element`, same lookup order and
+    /// rationale. `Float` is deliberately excluded: that receiver goes
+    /// through `receiver_is_signal_float`'s full method table instead.
+    fn receiver_signal_element(
+        &self,
+        offset: usize,
+        receiver: &str,
+    ) -> Option<lux_typeck::SignalElement> {
+        let from_local = self
+            .visible_locals(offset)
+            .into_iter()
+            .find(|local| local.name == receiver)
+            .and_then(|local| local.ty);
+        match from_local.or_else(|| parsed_expression_type(receiver)) {
+            Some(Type::Signal(elem)) if elem != lux_typeck::SignalElement::Float => Some(elem),
+            _ => None,
+        }
+    }
+
     pub fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.document.map.offset(&self.document.source, position);
         let word = word_at(&self.document.source, offset)?;
@@ -690,6 +722,21 @@ impl AnalysisSnapshot {
             .and_then(|elem| {
                 lux_stdlib::sequence_method_candidates(
                     lux_typeck::stdlib_bridge::sequence_element_param_type(elem),
+                    word.0,
+                )
+                .first()
+            })
+        {
+            value = Some(format!(
+                "```lux\n{}\n```\n\n{}",
+                signature_label(sig),
+                sig.doc
+            ));
+        } else if let Some(sig) = receiver_expr_before(&self.document.source, word.1)
+            .and_then(|receiver| self.receiver_signal_element(offset, receiver))
+            .and_then(|elem| {
+                lux_stdlib::non_float_signal_method_candidates(
+                    lux_typeck::stdlib_bridge::signal_element_param_type(elem),
                     word.0,
                 )
                 .first()
@@ -1485,6 +1532,28 @@ fn sequence_method_completions(prefix: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Completion for `chase.$0` where `chase` is a non-`Float` `Signal<T>`
+/// local (only reachable via `Effects.step(...)`) — `.spread()`. In V1
+/// this is the same single method regardless of `T`, so any one of the 4
+/// non-`Float` receiver tags works equally well to look it up; `Int` is
+/// picked arbitrarily, mirroring `sequence_method_completions`.
+fn non_float_signal_method_completions(prefix: &str) -> Vec<CompletionItem> {
+    lux_stdlib::non_float_signal_method_candidates(lux_stdlib::ParamType::SignalInt, "spread")
+        .iter()
+        .filter(|sig| matches_prefix(sig.name, prefix))
+        .map(|sig| CompletionItem {
+            label: sig.name.into(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(signature_label(sig)),
+            documentation: Some(Documentation::String(sig.doc.into())),
+            insert_text: Some(format!("{}($0)", sig.name)),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("1-member".into()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 fn signature_label(sig: &lux_stdlib::Signature) -> String {
     let params = sig
         .params
@@ -2058,7 +2127,7 @@ mod tests {
             .into_iter()
             .map(|item| item.label)
             .collect();
-        assert_eq!(labels, ["sine", "triangle", "saw", "square"]);
+        assert_eq!(labels, ["sine", "triangle", "saw", "square", "step"]);
     }
 
     /// Item 44.
@@ -2232,11 +2301,23 @@ mod tests {
     /// no method completions — `range`/`phase`/`spread`/`invert` aren't
     /// defined on it.
     #[test]
-    fn non_signal_float_local_member_completion_is_empty() {
+    fn non_float_signal_local_member_completion_only_offers_spread() {
+        // A non-`Float` `Signal<T>` local only ever has `.spread()` (see
+        // `non_float_signal_method_completions`'s docs) — even one built
+        // from `Signal.constant`, which isn't actually a valid `.spread()`
+        // source (that's a diagnostic, not a completion, concern; see
+        // `signal_float_local_member_completion_lists_range_phase_spread_invert`,
+        // which offers `.phase()`/`.spread()` just as optimistically on a
+        // `Signal<Float>` local that isn't really an oscillator either).
         let (analysis, position) = snapshot(
             "import std.Signal;\nscene main { let level: Signal<Intensity> = Signal.constant(50%); level.$0 }",
         );
-        assert!(analysis.complete(position).is_empty());
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["spread"]);
     }
 
     /// Item 47: once the first `range` argument narrows to `Intensity`,
@@ -2494,6 +2575,58 @@ mod tests {
             .map(|item| item.label)
             .collect();
         assert_eq!(labels, ["length"]);
+    }
+
+    #[test]
+    fn hover_on_effects_step_shows_its_signature() {
+        let source = "import std.Effects;\nimport std.Sequence;\nscene main { let x = Effects.step(Sequence.of(1, 2), 500ms); }";
+        let pos = source.find("step").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("step"));
+        assert!(contents.value.contains("Duration"));
+    }
+
+    #[test]
+    fn signature_help_on_effects_step_lists_every_element_type_overload() {
+        let source =
+            "import std.Effects;\nimport std.Sequence;\nscene main { let x = Effects.step(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 5);
+        let SignatureInformation { label, .. } = &help.signatures[0];
+        assert!(label.contains("Duration"));
+    }
+
+    #[test]
+    fn hover_on_unannotated_step_local_reports_the_concrete_signal_type() {
+        let source = "import std.Effects;\nimport std.Sequence;\nscene main { let chase = Effects.step(Sequence.of(red, blue), 500ms); }";
+        let pos = source.find("chase").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Signal<Color>"));
+    }
+
+    #[test]
+    fn hover_on_spread_method_of_a_non_float_step_signal_shows_its_signature() {
+        let source = "import std.Effects;\nimport std.Sequence;\nscene main { let x = Effects.step(Sequence.of(red, blue), 500ms).spread(360deg); }";
+        let pos = source.rfind("spread").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Signal<Color>"));
     }
 
     #[test]

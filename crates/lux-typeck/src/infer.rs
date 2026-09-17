@@ -15,8 +15,10 @@ use lux_hir::{HirCall, HirCallee, HirExpr};
 use lux_stdlib::Signature;
 
 use crate::rules::{binary_result_type, literal_type, unary_result_type};
-use crate::stdlib_bridge::{from_param_type, sequence_element_param_type, to_param_type};
-use crate::types::{SequenceElement, Type};
+use crate::stdlib_bridge::{
+    from_param_type, sequence_element_param_type, signal_element_param_type, to_param_type,
+};
+use crate::types::{SequenceElement, SignalElement, Type};
 
 /// Recomputes the type of `expr`. `local_types` must be indexed by
 /// `LocalId` and must assign every local referenced in `expr` a type —
@@ -154,6 +156,23 @@ pub fn resolve_method_call(
                 "resolve_method_call: `.{method}(...)` on `Sequence<{elem}>` should already be \
                  a valid, non-ambiguous method call — `resolve_method_call` must only be called \
                  on HIR that passed `lux_typeck::check`"
+            )
+        });
+    }
+
+    if let Type::Signal(elem) = receiver_ty
+        && elem != SignalElement::Float
+    {
+        return lux_stdlib::resolve_non_float_signal_method(
+            signal_element_param_type(elem),
+            method,
+            &arg_types,
+        )
+        .unwrap_or_else(|_| {
+            unreachable!(
+                "resolve_method_call: `.{method}(...)` on `Signal<{elem}>` should already be a \
+                 valid, non-ambiguous method call — `resolve_method_call` must only be called on \
+                 HIR that passed `lux_typeck::check`"
             )
         });
     }

@@ -1,0 +1,16 @@
+import std.Sequence;
+import std.Effects;
+
+scene main {
+    let colors = Sequence.of(red, blue);
+    let intensities = Sequence.of(10%, 50%, 100%);
+    let angles = Sequence.of(0deg, 90deg, 180deg);
+    let floats = Sequence.of(1.0, 2.0, 3.0);
+    let ints = Sequence.of(1, 2, 3);
+
+    let a: Signal<Color> = Effects.step(colors, 500ms);
+    let b: Signal<Intensity> = Effects.step(intensities, 500ms);
+    let c: Signal<Angle> = Effects.step(angles, 500ms);
+    let d: Signal<Float> = Effects.step(floats, 500ms);
+    let e: Signal<Int> = Effects.step(ints, 500ms);
+}

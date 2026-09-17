@@ -23,8 +23,9 @@
 //! its arguments alone, and mixing in `Vm`-owned mutable state would
 //! break that for all of them). The `Effects*` constructors additionally
 //! need `clock.now()` for their oscillator's time origin — another thing
-//! this pure function has no access to. `Vm::exec_call_intrinsic`
-//! recognizes those 9 ids and handles them itself, the same way it
+//! this pure function has no access to; the 5 `EffectsStep*` constructors
+//! need both, for the same two reasons. `Vm::exec_call_intrinsic`
+//! recognizes those ids and handles them itself, the same way it
 //! already handles `SetAttribute`/`TransitionAttribute`/`Wait`/`BindSignal`
 //! outside this file for the same reason. They're still listed in the
 //! match below (each just `unreachable!()`) so this stays a real
@@ -131,7 +132,11 @@ pub fn eval_intrinsic(intrinsic: IntrinsicId, args: &[Value]) -> Value {
         | IntrinsicId::SignalRangeIntensity
         | IntrinsicId::SignalRangeAngle
         | IntrinsicId::SignalPhase
-        | IntrinsicId::SignalSpread
+        | IntrinsicId::SignalSpreadFloat
+        | IntrinsicId::SignalSpreadInt
+        | IntrinsicId::SignalSpreadAngle
+        | IntrinsicId::SignalSpreadIntensity
+        | IntrinsicId::SignalSpreadColor
         | IntrinsicId::SignalInvert => unreachable!(
             "eval_intrinsic: signal-transformation intrinsics are handled by \
              Vm::exec_call_intrinsic directly, which needs mutable access to the \
@@ -156,6 +161,16 @@ pub fn eval_intrinsic(intrinsic: IntrinsicId, args: &[Value]) -> Value {
             "eval_intrinsic: SequenceLength* intrinsics are handled by Vm::exec_call_intrinsic \
              directly, which needs (read-only) access to the SequenceStore this pure function \
              doesn't have — see this module's doc"
+        ),
+
+        IntrinsicId::EffectsStepInt
+        | IntrinsicId::EffectsStepFloat
+        | IntrinsicId::EffectsStepAngle
+        | IntrinsicId::EffectsStepIntensity
+        | IntrinsicId::EffectsStepColor => unreachable!(
+            "eval_intrinsic: EffectsStep* intrinsics are handled by Vm::exec_call_intrinsic \
+             directly, which needs mutable access to the SignalStore and the clock this pure \
+             function doesn't have — see this module's doc"
         ),
     }
 }

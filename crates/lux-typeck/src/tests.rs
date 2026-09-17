@@ -992,7 +992,7 @@ fn range_is_only_available_on_signal_float() {
     .unwrap_err();
     assert!(errors.iter().any(|e| {
         e.message
-            .contains("no method `range` on type `Signal<Intensity>`")
+            .contains("no method `range` on `Signal<Intensity>`")
     }));
 }
 
@@ -1439,4 +1439,201 @@ fn sequence_element_from_type_matches_registered_types() {
     for elem in SequenceElement::ALL.iter().copied() {
         assert_eq!(SequenceElement::from_type(elem.as_type()), Some(elem));
     }
+}
+
+// --- Effects.step -------------------------------------------------------
+
+#[test]
+fn effects_step_infers_signal_of_the_sequence_element_type() {
+    for (values, expected) in [
+        ("red, blue, white", "Signal<Color>"),
+        ("10%, 20%", "Signal<Intensity>"),
+        ("1.0, 2.0", "Signal<Float>"),
+        ("0deg, 90deg", "Signal<Angle>"),
+        ("1, 2, 3", "Signal<Int>"),
+    ] {
+        let source = format!(
+            r#"
+            import std.Sequence;
+            import std.Effects;
+            scene main {{
+                let palette = Sequence.of({values});
+                let chase = Effects.step(palette, 500ms);
+            }}
+            "#
+        );
+        let typed =
+            check_source(&source).unwrap_or_else(|e| panic!("{values}: unexpected errors: {e:?}"));
+        assert_eq!(typed.scenes[0].local_types[1].to_string(), expected);
+    }
+}
+
+#[test]
+fn effects_step_rejects_non_duration_every() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        import std.Effects;
+        scene main {
+            let palette = Sequence.of(red, blue);
+            let bad = Effects.step(palette, 50%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(!errors.is_empty());
+}
+
+#[test]
+fn effects_step_rejects_non_sequence_first_argument() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let bad = Effects.step(red, 500ms);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(!errors.is_empty());
+}
+
+#[test]
+fn effects_step_rejects_a_literal_zero_duration() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        import std.Effects;
+        scene main {
+            let palette = Sequence.of(red, blue);
+            let bad = Effects.step(palette, 0ms);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("`every` must be greater than zero"))
+    );
+}
+
+#[test]
+fn effects_step_signal_binding_matches_the_sequence_element_type() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Sequence;
+        import std.Effects;
+        scene main {
+            let palette = Sequence.of(red, blue, white);
+            Washes.color <- Effects.step(palette, 500ms);
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn effects_step_signal_binding_wrong_element_type_is_rejected() {
+    let errors = check_source_with_targets(
+        r#"
+        import std.Sequence;
+        import std.Effects;
+        scene main {
+            let palette = Sequence.of(10%, 20%);
+            Washes.color <- Effects.step(palette, 500ms);
+        }
+        "#,
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Color>`, found `Signal<Intensity>`")
+    }));
+}
+
+#[test]
+fn spread_on_effects_step_passes_for_every_element_type() {
+    for (values, expected) in [
+        ("red, blue", "Signal<Color>"),
+        ("10%, 20%", "Signal<Intensity>"),
+        ("0deg, 90deg", "Signal<Angle>"),
+        ("1, 2, 3", "Signal<Int>"),
+    ] {
+        let source = format!(
+            r#"
+            import std.Sequence;
+            import std.Effects;
+            scene main {{
+                let palette = Sequence.of({values});
+                let chase = Effects.step(palette, 500ms).spread(360deg);
+            }}
+            "#
+        );
+        let typed =
+            check_source(&source).unwrap_or_else(|e| panic!("{values}: unexpected errors: {e:?}"));
+        assert_eq!(typed.scenes[0].local_types[1].to_string(), expected);
+    }
+}
+
+#[test]
+fn range_phase_invert_are_not_defined_on_non_float_step_signals() {
+    for method in ["range(0%, 100%)", "phase(90deg)", "invert()"] {
+        let source = format!(
+            r#"
+            import std.Sequence;
+            import std.Effects;
+            scene main {{
+                let palette = Sequence.of(10%, 20%);
+                let bad = Effects.step(palette, 500ms).{method};
+            }}
+            "#
+        );
+        let errors = check_source(&source).unwrap_err();
+        assert!(
+            !errors.is_empty(),
+            "expected `.{method}` on a non-Float step signal to be rejected"
+        );
+    }
+}
+
+#[test]
+fn spread_on_a_non_step_non_oscillator_signal_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let level: Signal<Intensity> = Signal.constant(50%);
+            let bad = level.spread(360deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("can only be applied directly"))
+    );
+}
+
+#[test]
+fn spread_chained_on_step_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        import std.Effects;
+        scene main {
+            let palette = Sequence.of(red, blue);
+            let bad = Effects.step(palette, 500ms).spread(180deg).spread(180deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("can only be applied directly"))
+    );
 }

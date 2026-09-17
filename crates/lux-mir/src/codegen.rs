@@ -272,7 +272,11 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::SignalRangeIntensity => B::SignalRangeIntensity,
         S::SignalRangeAngle => B::SignalRangeAngle,
         S::SignalPhase => B::SignalPhase,
-        S::SignalSpread => B::SignalSpread,
+        S::SignalSpreadFloat => B::SignalSpreadFloat,
+        S::SignalSpreadInt => B::SignalSpreadInt,
+        S::SignalSpreadAngle => B::SignalSpreadAngle,
+        S::SignalSpreadIntensity => B::SignalSpreadIntensity,
+        S::SignalSpreadColor => B::SignalSpreadColor,
         S::SignalInvert => B::SignalInvert,
         S::SequenceOfInt => B::SequenceOfInt,
         S::SequenceOfFloat => B::SequenceOfFloat,
@@ -284,6 +288,11 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::SequenceLengthAngle => B::SequenceLengthAngle,
         S::SequenceLengthIntensity => B::SequenceLengthIntensity,
         S::SequenceLengthColor => B::SequenceLengthColor,
+        S::EffectsStepInt => B::EffectsStepInt,
+        S::EffectsStepFloat => B::EffectsStepFloat,
+        S::EffectsStepAngle => B::EffectsStepAngle,
+        S::EffectsStepIntensity => B::EffectsStepIntensity,
+        S::EffectsStepColor => B::EffectsStepColor,
     }
 }
 

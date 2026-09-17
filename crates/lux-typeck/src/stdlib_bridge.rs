@@ -22,11 +22,10 @@ use crate::types::{SequenceElement, SignalElement, Type};
 /// argument anywhere should behave exactly like passing a `Bool`.
 /// `Type::Duration` *is* representable (`ParamType::Duration`), first used
 /// by `std.Effects`'s oscillator `period` parameters. `Type::Sequence(_)`
-/// maps to `Unsupported` for the same reason `Type::Signal(_)` does: no
-/// stdlib function accepts a `Sequence` *argument* in V1 (`Sequence.of`'s
-/// arguments are its future *elements*, checked directly by
-/// `crate::checker::Checker::check_call`, never through this conversion —
-/// see that method's docs).
+/// *is* representable too, as of `Effects.step(sequence: Sequence<T>,
+/// every: Duration)` — the first stdlib function to accept one as an
+/// argument (reuses [`sequence_element_param_type`], the same tag already
+/// used for a `Sequence<T>` *receiver*).
 pub fn to_param_type(ty: Type) -> ParamType {
     match ty {
         Type::Int => ParamType::Int,
@@ -35,20 +34,18 @@ pub fn to_param_type(ty: Type) -> ParamType {
         Type::Intensity => ParamType::Intensity,
         Type::Color => ParamType::Color,
         Type::Duration => ParamType::Duration,
-        Type::Bool | Type::Frequency | Type::Tempo | Type::Signal(_) | Type::Sequence(_) => {
-            ParamType::Unsupported
-        }
+        Type::Sequence(elem) => sequence_element_param_type(elem),
+        Type::Bool | Type::Frequency | Type::Tempo | Type::Signal(_) => ParamType::Unsupported,
     }
 }
 
-/// The `ParamType` tag for a `Sequence<T>` *receiver* — e.g. selecting
+/// The `ParamType` tag for a `Sequence<T>` value — used both as
+/// [`to_param_type`]'s `Type::Sequence(_)` case (an ordinary argument
+/// conversion, e.g. `Effects.step`'s `sequence` parameter) and to select
 /// which of `.length()`'s 5 monomorphized overloads a `Sequence<Color>`
-/// value resolves to (see `lux_stdlib::methods::resolve_sequence_method`).
-/// Distinct from [`to_param_type`] (which maps `Type::Sequence(_)` to
-/// `Unsupported`, since no function ever accepts one as an *argument*):
-/// this is only ever used to tag which builtin-method table a `Sequence`
-/// *receiver* dispatches into, the same role `Type::Signal(SignalElement::Float)`
-/// plays for `Signal<Float>`'s single builtin-method table.
+/// *receiver* resolves to (see `lux_stdlib::methods::resolve_sequence_method`),
+/// the same dual role `Type::Signal(SignalElement::Float)` plays for
+/// `Signal<Float>`'s builtin methods.
 pub fn sequence_element_param_type(elem: SequenceElement) -> ParamType {
     match elem {
         SequenceElement::Int => ParamType::SequenceInt,
@@ -56,6 +53,24 @@ pub fn sequence_element_param_type(elem: SequenceElement) -> ParamType {
         SequenceElement::Angle => ParamType::SequenceAngle,
         SequenceElement::Intensity => ParamType::SequenceIntensity,
         SequenceElement::Color => ParamType::SequenceColor,
+    }
+}
+
+/// The `ParamType` tag for a non-`Float` `Signal<T>` *receiver* — selects
+/// which of `.spread()`'s 4 non-`Float` monomorphized overloads a
+/// `Signal<T>` value resolves to (see
+/// `lux_stdlib::methods::resolve_non_float_signal_method`). `Float` itself
+/// is never passed here: `Signal<Float>` has its own full method table
+/// (`lux_stdlib::resolve_signal_float_method`), selected directly by
+/// `crate::checker::Checker::check_signal_method` without going through
+/// this tag at all.
+pub fn signal_element_param_type(elem: SignalElement) -> ParamType {
+    match elem {
+        SignalElement::Int => ParamType::SignalInt,
+        SignalElement::Float => ParamType::SignalFloat,
+        SignalElement::Angle => ParamType::SignalAngle,
+        SignalElement::Intensity => ParamType::SignalIntensity,
+        SignalElement::Color => ParamType::SignalColor,
     }
 }
 
@@ -148,12 +163,14 @@ mod tests {
     }
 
     #[test]
-    fn sequence_type_as_an_argument_is_unsupported() {
-        // No stdlib function accepts a `Sequence` parameter in V1.
-        assert_eq!(
-            to_param_type(Type::Sequence(SequenceElement::Color)),
-            ParamType::Unsupported
-        );
+    fn sequence_type_as_an_argument_round_trips() {
+        // `Effects.step(sequence: Sequence<T>, ...)` accepts one.
+        for elem in SequenceElement::ALL.iter().copied() {
+            assert_eq!(
+                to_param_type(Type::Sequence(elem)),
+                sequence_element_param_type(elem)
+            );
+        }
     }
 
     #[test]

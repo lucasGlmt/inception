@@ -157,7 +157,8 @@ impl Vm {
         now: inception_core::Timestamp,
         lighting: &mut LightingState,
     ) -> Result<(), SignalError> {
-        self.bindings.sample(&self.signals, now, lighting)
+        self.bindings
+            .sample(&self.signals, &self.sequences, now, lighting)
     }
 
     /// The function the VM is currently executing, if any (`None` before
@@ -534,7 +535,7 @@ impl Vm {
                     );
                     let sampled = self
                         .signals
-                        .sample(signal, context)
+                        .sample(signal, context, &self.sequences)
                         .map_err(|err| signal_error(function, pc, err))?;
                     if let Some(current) = sampled.into_attribute_value(attribute) {
                         lighting.set_fixture_attribute(fixture, current);
@@ -755,6 +756,31 @@ impl Vm {
             return Ok(Step::Continue);
         }
 
+        if let Some(elem) = effects_step_element_of(intrinsic) {
+            let Value::Sequence(_, sequence) = args[0] else {
+                unreachable!(
+                    "exec_call_intrinsic: EffectsStep* sequence operand type already checked by \
+                     the verifier"
+                );
+            };
+            let Value::Duration(every) = args[1] else {
+                unreachable!(
+                    "exec_call_intrinsic: EffectsStep* every operand type already checked by the \
+                     verifier"
+                );
+            };
+            if every == inception_core::Duration::ZERO {
+                return Err(VmError::new(function, pc, VmErrorKind::InvalidSignalPeriod));
+            }
+            let id = self.signals.insert(SignalKind::Step {
+                sequence,
+                every,
+                started_at: clock.now(),
+            });
+            self.stack.push(Value::Signal(elem, id));
+            return Ok(Step::Continue);
+        }
+
         self.stack.push(eval_intrinsic(intrinsic, &args));
         Ok(Step::Continue)
     }
@@ -839,20 +865,28 @@ impl Vm {
                     offset_millideg: combined_offset.rem_euclid(360_000),
                 }
             }
-            IntrinsicId::SignalSpread => {
+            IntrinsicId::SignalSpreadFloat
+            | IntrinsicId::SignalSpreadInt
+            | IntrinsicId::SignalSpreadAngle
+            | IntrinsicId::SignalSpreadIntensity
+            | IntrinsicId::SignalSpreadColor => {
                 let Value::Angle(amount_millideg) = args[1] else {
                     unreachable!(
-                        "construct_signal_transform: SignalSpread amount operand type already \
+                        "construct_signal_transform: SignalSpread* amount operand type already \
                          checked by the verifier"
                     );
                 };
                 // Unlike `SignalPhase`, never flattened onto a chained
                 // `.spread(...)`/`.phase(...)` — `lux-typeck` only allows
-                // `.spread()` directly on a base oscillator or on a
-                // `.phase(...)` chained from one, so `source` here is
-                // already exactly what `SignalStore::oscillator_basis`
-                // expects: a base oscillator or a `Phase` wrapping one,
-                // never another `Spread`.
+                // `.spread()` directly on a base oscillator, on a
+                // `.phase(...)` chained from one, or directly on an
+                // `EffectsStep*` signal, so `source` here is already
+                // exactly what `SignalStore`'s sample arm for `Spread`
+                // expects (see that type's docs) — never another
+                // `Spread`. The element type (which of the 5
+                // `SignalSpread*` variants this is) doesn't affect
+                // construction at all: it's carried by `self.stack.push`'s
+                // caller via `signal_transform_elem`, not by this `SignalKind`.
                 SignalKind::Spread {
                     source,
                     amount_millideg,
@@ -867,8 +901,9 @@ impl Vm {
     }
 }
 
-/// The `ScalarValueType` a `SignalRange*`/`SignalPhase`/`SignalInvert`
-/// intrinsic produces, or `None` for every other intrinsic.
+/// The `ScalarValueType` a `SignalRange*`/`SignalPhase`/`SignalSpread*`/
+/// `SignalInvert` intrinsic produces, or `None` for every other
+/// intrinsic.
 fn signal_transform_elem(
     intrinsic: lux_bytecode::IntrinsicId,
 ) -> Option<lux_bytecode::ScalarValueType> {
@@ -877,9 +912,13 @@ fn signal_transform_elem(
         IntrinsicId::SignalRangeFloat => Some(ScalarValueType::Float),
         IntrinsicId::SignalRangeIntensity => Some(ScalarValueType::Intensity),
         IntrinsicId::SignalRangeAngle => Some(ScalarValueType::Angle),
-        IntrinsicId::SignalPhase | IntrinsicId::SignalSpread | IntrinsicId::SignalInvert => {
+        IntrinsicId::SignalPhase | IntrinsicId::SignalSpreadFloat | IntrinsicId::SignalInvert => {
             Some(ScalarValueType::Float)
         }
+        IntrinsicId::SignalSpreadInt => Some(ScalarValueType::Int),
+        IntrinsicId::SignalSpreadAngle => Some(ScalarValueType::Angle),
+        IntrinsicId::SignalSpreadIntensity => Some(ScalarValueType::Intensity),
+        IntrinsicId::SignalSpreadColor => Some(ScalarValueType::Color),
         _ => None,
     }
 }
@@ -933,6 +972,23 @@ fn sequence_length_of(intrinsic: lux_bytecode::IntrinsicId) -> Option<()> {
     .then_some(())
 }
 
+/// The `ScalarValueType` an `EffectsStep*` intrinsic produces a `Step`
+/// signal of, or `None` for every other (non-`Step`-constructing)
+/// intrinsic.
+fn effects_step_element_of(
+    intrinsic: lux_bytecode::IntrinsicId,
+) -> Option<lux_bytecode::ScalarValueType> {
+    use lux_bytecode::{IntrinsicId, ScalarValueType};
+    match intrinsic {
+        IntrinsicId::EffectsStepInt => Some(ScalarValueType::Int),
+        IntrinsicId::EffectsStepFloat => Some(ScalarValueType::Float),
+        IntrinsicId::EffectsStepAngle => Some(ScalarValueType::Angle),
+        IntrinsicId::EffectsStepIntensity => Some(ScalarValueType::Intensity),
+        IntrinsicId::EffectsStepColor => Some(ScalarValueType::Color),
+        _ => None,
+    }
+}
+
 /// The `SignalKind` constructor an `Effects*` intrinsic builds, or `None`
 /// for every other (non-oscillator-producing) intrinsic. Returned as a
 /// plain function pointer rather than inlining the four cases directly
@@ -983,6 +1039,9 @@ fn signal_error(function: FunctionId, pc: usize, error: SignalError) -> VmError 
         SignalError::UnknownSignal(id) => VmErrorKind::UnknownSignal(id),
         SignalError::UnsupportedPhaseSource(id) => VmErrorKind::UnsupportedPhaseSource(id),
         SignalError::UnsupportedSpreadSource(id) => VmErrorKind::UnsupportedSpreadSource(id),
+        SignalError::UnknownSequence(id) => VmErrorKind::UnknownSequence(id),
+        SignalError::EmptySequence(id) => VmErrorKind::EmptyStepSequence(id),
+        SignalError::ZeroStepInterval(_) => VmErrorKind::InvalidSignalPeriod,
     };
     VmError::new(function, pc, kind)
 }

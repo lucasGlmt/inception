@@ -216,7 +216,7 @@ fn effects_sine_program_compiles_and_samples_the_documented_phase_table() {
     for (millis, expected) in [(0, 0.5), (500, 1.0), (1000, 0.5), (1500, 0.0), (2000, 0.5)] {
         let sampled = vm
             .signals()
-            .sample(id, Timestamp::from_millis(millis))
+            .sample(id, Timestamp::from_millis(millis), vm.sequences())
             .unwrap();
         let inception_vm::Value::Float(v) = sampled else {
             panic!("expected Float, got {sampled:?}");
@@ -263,7 +263,10 @@ fn effects_oscillator_created_after_a_wait_starts_its_cycle_there() {
     // Sampled exactly at its own origin (t=1s): elapsed=0, phase=0,
     // sine=0.5 — never the value it would have had if it had (wrongly)
     // started ticking from the runtime's own t=0.
-    let sampled = vm.signals().sample(id, Timestamp::from_secs(1)).unwrap();
+    let sampled = vm
+        .signals()
+        .sample(id, Timestamp::from_secs(1), vm.sequences())
+        .unwrap();
     let inception_vm::Value::Float(v) = sampled else {
         panic!("expected Float, got {sampled:?}");
     };
@@ -398,4 +401,225 @@ fn sequence_out_of_bounds_index_faults_the_vm_not_a_panic() {
         }
     ));
     assert!(vm.is_faulted());
+}
+
+/// The `Effects.step` task brief's own worked example, taken all the way
+/// through to a bound, looping color signal: `0.0s -> red, 0.5s -> blue,
+/// 1.0s -> white, 1.5s -> red, ...`, sampled through the exact same
+/// `sample_signal_bindings` path the real runtime loop uses every frame
+/// (never a raw `vm.signals().sample(...)` call — this is what proves the
+/// binding engine needs no `Step`-specific knowledge, per item 8 of the
+/// task brief).
+#[test]
+fn effects_step_program_compiles_and_binds_a_looping_color_signal() {
+    let source = r#"
+        import std.Sequence;
+        import std.Effects;
+
+        rig contract DemoRig {
+            role Front: Group<Color>;
+        }
+
+        scene main {
+            let palette = Sequence.of(
+                red,
+                blue,
+                white
+            );
+
+            Front.color <-
+                Effects.step(palette, 500ms);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("step program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    lighting.define_target(
+        TargetId(0),
+        ResolvedTarget {
+            fixtures: vec![FixtureId(0)],
+        },
+    );
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let red = Rgb {
+        red: 255 * 257,
+        green: 0,
+        blue: 0,
+    };
+    let blue = Rgb {
+        red: 0,
+        green: 0,
+        blue: 255 * 257,
+    };
+    let white = Rgb {
+        red: 255 * 257,
+        green: 255 * 257,
+        blue: 255 * 257,
+    };
+
+    for (millis, expected) in [
+        (0, red),
+        (499, red),
+        (500, blue),
+        (999, blue),
+        (1000, white),
+        (1499, white),
+        (1500, red),
+        (2000, blue),
+    ] {
+        vm.sample_signal_bindings(Timestamp::from_millis(millis), &mut lighting)
+            .unwrap();
+        assert_eq!(lighting.color(FixtureId(0)), expected, "at {millis}ms");
+    }
+}
+
+/// Item 2: the signal's origin is when `Effects.step(...)` is *created*,
+/// not the program's/show's start — a `wait` before it delays the first
+/// element accordingly.
+#[test]
+fn effects_step_origin_is_when_it_was_created_not_program_start() {
+    let source = r#"
+        import std.Sequence;
+        import std.Effects;
+
+        rig contract DemoRig {
+            role Front: Group<Color>;
+        }
+
+        scene main {
+            wait 2s;
+
+            let palette = Sequence.of(red, blue, white);
+
+            Front.color <-
+                Effects.step(palette, 500ms);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("step program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    lighting.define_target(
+        TargetId(0),
+        ResolvedTarget {
+            fixtures: vec![FixtureId(0)],
+        },
+    );
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting(), "should still be blocked on the 2s wait");
+
+    clock.advance(Duration::from_secs(2));
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let red = Rgb {
+        red: 255 * 257,
+        green: 0,
+        blue: 0,
+    };
+    let blue = Rgb {
+        red: 0,
+        green: 0,
+        blue: 255 * 257,
+    };
+
+    // The signal was created at t=2s (once the `wait` unblocked), so its
+    // own origin is t=2s, not absolute zero: sampling at t=2s must read
+    // the first element, exactly as sampling a fresh signal at its own
+    // `t=0` would.
+    vm.sample_signal_bindings(Timestamp::from_secs(2), &mut lighting)
+        .unwrap();
+    assert_eq!(lighting.color(FixtureId(0)), red);
+
+    vm.sample_signal_bindings(Timestamp::from_millis(2500), &mut lighting)
+        .unwrap();
+    assert_eq!(lighting.color(FixtureId(0)), blue);
+}
+
+/// Item 9/10: `.spread()` on an `Effects.step(...)` signal, bound to a
+/// 4-fixture group — the exact worked example from the task brief: 4
+/// elements stepped every 500ms (a 2s full cycle), spread 360deg over 4
+/// fixtures, so at `t=0` fixture `i` displays element `i`.
+#[test]
+fn effects_step_with_spread_distributes_offsets_across_a_fixture_group() {
+    let source = r#"
+        import std.Sequence;
+        import std.Effects;
+
+        rig contract DemoRig {
+            role Front: Group<Color>;
+        }
+
+        scene main {
+            let palette = Sequence.of(
+                red,
+                blue,
+                white,
+                red
+            );
+
+            Front.color <-
+                Effects.step(palette, 500ms).spread(360deg);
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("step program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    lighting.define_target(
+        TargetId(0),
+        ResolvedTarget {
+            fixtures: vec![FixtureId(0), FixtureId(1), FixtureId(2), FixtureId(3)],
+        },
+    );
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    vm.sample_signal_bindings(Timestamp::ZERO, &mut lighting)
+        .unwrap();
+
+    let red = Rgb {
+        red: 255 * 257,
+        green: 0,
+        blue: 0,
+    };
+    let blue = Rgb {
+        red: 0,
+        green: 0,
+        blue: 255 * 257,
+    };
+    let white = Rgb {
+        red: 255 * 257,
+        green: 255 * 257,
+        blue: 255 * 257,
+    };
+
+    // Fixture 0 -> element 0 (red), fixture 1 -> element 1 (blue),
+    // fixture 2 -> element 2 (white), fixture 3 -> element 3 (red).
+    assert_eq!(lighting.color(FixtureId(0)), red);
+    assert_eq!(lighting.color(FixtureId(1)), blue);
+    assert_eq!(lighting.color(FixtureId(2)), white);
+    assert_eq!(lighting.color(FixtureId(3)), red);
 }

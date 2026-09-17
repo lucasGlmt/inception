@@ -149,7 +149,10 @@ fn call_intrinsic_signal_constant_pushes_a_sampleable_signal() {
         Timestamp::from_secs(1),
         Timestamp::from_secs(3600),
     ] {
-        assert_eq!(vm.signals().sample(id, at), Ok(Value::Intensity(32767)));
+        assert_eq!(
+            vm.signals().sample(id, at, vm.sequences()),
+            Ok(Value::Intensity(32767))
+        );
     }
 }
 
@@ -1025,7 +1028,7 @@ fn call_intrinsic_effects_sine_pushes_a_sampleable_oscillator_signal() {
     for (millis, expected) in [(0, 0.5), (500, 1.0), (1000, 0.5), (1500, 0.0), (2000, 0.5)] {
         assert_float_close(
             vm.signals()
-                .sample(id, Timestamp::from_millis(millis))
+                .sample(id, Timestamp::from_millis(millis), vm.sequences())
                 .unwrap(),
             expected,
         );
@@ -1101,14 +1104,14 @@ fn effects_oscillator_origin_is_the_clock_time_at_construction() {
     // store directly.
     assert_float_close(
         vm.signals()
-            .sample(SignalId(0), Timestamp::from_secs(5))
+            .sample(SignalId(0), Timestamp::from_secs(5), vm.sequences())
             .unwrap(),
         0.0,
     );
     assert_float_close(
         vm_at_zero
             .signals()
-            .sample(SignalId(0), Timestamp::from_secs(5))
+            .sample(SignalId(0), Timestamp::from_secs(5), vm.sequences())
             .unwrap(),
         0.5,
     );
@@ -1168,13 +1171,13 @@ fn separate_oscillator_calls_get_independent_origins() {
     // (origin 1s) has just started — phase 0.
     assert_float_close(
         vm.signals()
-            .sample(SignalId(0), Timestamp::from_secs(1))
+            .sample(SignalId(0), Timestamp::from_secs(1), vm.sequences())
             .unwrap(),
         0.5,
     );
     assert_float_close(
         vm.signals()
-            .sample(SignalId(1), Timestamp::from_secs(1))
+            .sample(SignalId(1), Timestamp::from_secs(1), vm.sequences())
             .unwrap(),
         0.0,
     );
@@ -1254,7 +1257,9 @@ fn every_oscillator_intrinsic_constructs_a_sampleable_signal() {
             .unwrap();
         assert!(vm.is_finished());
         assert_float_close(
-            vm.signals().sample(SignalId(0), Timestamp::ZERO).unwrap(),
+            vm.signals()
+                .sample(SignalId(0), Timestamp::ZERO, vm.sequences())
+                .unwrap(),
             expected_at_zero,
         );
     }
@@ -1303,7 +1308,9 @@ fn call_intrinsic_signal_range_intensity_constructs_a_sampleable_signal() {
 
     // `SignalId(0)` is the sine, `SignalId(1)` is the range built on it.
     assert_eq!(
-        vm.signals().sample(SignalId(1), Timestamp::ZERO).unwrap(),
+        vm.signals()
+            .sample(SignalId(1), Timestamp::ZERO, vm.sequences())
+            .unwrap(),
         Value::Intensity(39321) // sine(t=0) = 0.5 -> 60% of the 20%..100% range
     );
 }
@@ -1531,4 +1538,164 @@ fn indexing_out_of_bounds_faults_with_a_structured_error_not_a_panic() {
         }
     );
     assert!(vm.is_faulted());
+}
+
+#[test]
+fn call_intrinsic_effects_step_pushes_a_sampleable_step_signal() {
+    // CONST Int(1); CONST Int(2); CALL_INTRINSIC SequenceOfInt(2);
+    // CONST Duration(500ms); CALL_INTRINSIC EffectsStepInt(2);
+    // CONST Duration(1s); WAIT; POP; RETURN
+    let module = module_with(
+        vec![
+            Constant::Int(1),
+            Constant::Int(2),
+            Constant::Duration(500_000_000),
+            Constant::Duration(1_000_000_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::Const(ConstantId(1)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 2,
+                },
+                Instruction::Const(ConstantId(2)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsStepInt,
+                    arg_count: 2,
+                },
+                Instruction::Const(ConstantId(3)),
+                Instruction::Wait,
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            3,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+
+    let &[Value::Signal(elem, id)] = vm.stack() else {
+        panic!(
+            "expected exactly one Signal value on the stack, got {:?}",
+            vm.stack()
+        );
+    };
+    assert_eq!(elem, lux_bytecode::ScalarValueType::Int);
+
+    for (millis, expected) in [(0, 1), (499, 1), (500, 2), (999, 2), (1000, 1)] {
+        assert_eq!(
+            vm.signals()
+                .sample(id, Timestamp::from_millis(millis), vm.sequences()),
+            Ok(Value::Int(expected)),
+            "at {millis}ms"
+        );
+    }
+}
+
+#[test]
+fn effects_step_zero_every_is_a_structured_runtime_error() {
+    let module = module_with(
+        vec![Constant::Int(1), Constant::Duration(0)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 1,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsStepInt,
+                    arg_count: 2,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            2,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    let err = vm
+        .run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap_err();
+    assert_eq!(err.kind, VmErrorKind::InvalidSignalPeriod);
+    assert!(vm.is_faulted());
+}
+
+#[test]
+fn spread_on_effects_step_pushes_a_sampleable_signal_of_the_source_element_type() {
+    // Builds Sequence.of(1,2,3,4), Effects.step(seq, 500ms).spread(360deg).
+    let module = module_with(
+        vec![
+            Constant::Int(1),
+            Constant::Int(2),
+            Constant::Int(3),
+            Constant::Int(4),
+            Constant::Duration(500_000_000),
+            Constant::Angle(360_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::Const(ConstantId(1)),
+                Instruction::Const(ConstantId(2)),
+                Instruction::Const(ConstantId(3)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 4,
+                },
+                Instruction::Const(ConstantId(4)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsStepInt,
+                    arg_count: 2,
+                },
+                Instruction::Const(ConstantId(5)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SignalSpreadInt,
+                    arg_count: 2,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            5,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    // SignalId(0) = Step, SignalId(1) = Spread. Matches item 10's worked
+    // example: fixture `i` of 4 reads element `i` at `t=0`.
+    let spread = crate::signal::SignalId(1);
+    for (fixture_index, expected) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+        let context = crate::signal::SignalSampleContext::new(Timestamp::ZERO, fixture_index, 4);
+        assert_eq!(
+            vm.signals().sample(spread, context, vm.sequences()),
+            Ok(Value::Int(expected)),
+            "fixture {fixture_index}"
+        );
+    }
 }

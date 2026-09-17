@@ -1,0 +1,9 @@
+import std.Sequence;
+import std.Effects;
+
+scene main {
+    let palette = Sequence.of(red, blue, white, red);
+
+    Washes.color <-
+        Effects.step(palette, 500ms).spread(360deg);
+}

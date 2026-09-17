@@ -1,0 +1,7 @@
+import std.Sequence;
+import std.Effects;
+
+scene main {
+    let palette = Sequence.of(red, blue);
+    let bad = Effects.step(palette, 50%);
+}

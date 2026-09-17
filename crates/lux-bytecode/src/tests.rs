@@ -825,3 +825,153 @@ fn valid_sequence_length_passes() {
     );
     verify(&module).expect("valid module should verify");
 }
+
+#[test]
+fn valid_effects_step_passes() {
+    let module = function_with(
+        vec![Constant::Int(1), Constant::Duration(500_000_000)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::EffectsStepInt,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn effects_step_with_wrong_sequence_element_type_is_rejected() {
+    // EffectsStepInt requires a Sequence<Int>, not Sequence<Color>.
+    let module = function_with(
+        vec![
+            Constant::Color(crate::value::ColorValue { r: 0, g: 0, b: 0 }),
+            Constant::Duration(500_000_000),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfColor,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::EffectsStepInt,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| matches!(
+        e.kind,
+        VerificationErrorKind::InvalidIntrinsicOperand {
+            intrinsic: IntrinsicId::EffectsStepInt,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn effects_step_with_non_duration_second_argument_is_rejected() {
+    let module = function_with(
+        vec![Constant::Int(1), Constant::Int(500)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::EffectsStepInt,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| matches!(
+        e.kind,
+        VerificationErrorKind::InvalidIntrinsicOperand {
+            intrinsic: IntrinsicId::EffectsStepInt,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn effects_step_pushes_a_signal_of_the_matching_element_type() {
+    let module = function_with(
+        vec![
+            Constant::Color(crate::value::ColorValue { r: 255, g: 0, b: 0 }),
+            Constant::Duration(500_000_000),
+        ],
+        vec![ValueType::Signal(crate::value::ScalarValueType::Color)],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfColor,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::EffectsStepColor,
+                arg_count: 2,
+            },
+            Instruction::StoreLocal(LocalId(0)),
+            Instruction::Return,
+        ],
+        2,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn valid_spread_on_effects_step_passes() {
+    let module = function_with(
+        vec![
+            Constant::Int(1),
+            Constant::Duration(500_000_000),
+            Constant::Angle(360_000),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::EffectsStepInt,
+                arg_count: 2,
+            },
+            Instruction::Const(ConstantId(2)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SignalSpreadInt,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        3,
+    );
+    verify(&module).expect("valid module should verify");
+}

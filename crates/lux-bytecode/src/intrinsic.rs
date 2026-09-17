@@ -62,14 +62,22 @@ pub enum IntrinsicId {
     SignalRangeAngle,
     /// `Signal<Float>.phase(Angle) -> Signal<Float>`.
     SignalPhase,
-    /// `Signal<Float>.spread(Angle) -> Signal<Float>`: distributes its
-    /// `Angle` operand as a per-fixture phase offset across whatever
-    /// group the signal ends up bound to (`amount * fixture_index /
-    /// fixture_count`, resolved at sample time by
+    /// `Signal<T>.spread(Angle) -> Signal<T>`, monomorphized per element
+    /// type: distributes its `Angle` operand as a per-fixture offset
+    /// across whatever group the signal ends up bound to (`amount *
+    /// fixture_index / fixture_count`, resolved at sample time by
     /// `inception_vm::signal::SignalSampleContext` — see that type's
     /// docs). Shares `SignalPhase`'s operand shape exactly (receiver,
-    /// then one `Angle`), just a different `IntrinsicId`.
-    SignalSpread,
+    /// then one `Angle`), just a different `IntrinsicId` per element
+    /// type — unlike `SignalPhase`/`SignalRange*`/`SignalInvert`
+    /// (`Float`-only), `.spread()` is also valid directly on an
+    /// `EffectsStep*` signal, for any of the 5 element types (see item 9
+    /// of the `Effects.step` task brief).
+    SignalSpreadFloat,
+    SignalSpreadInt,
+    SignalSpreadAngle,
+    SignalSpreadIntensity,
+    SignalSpreadColor,
     /// `Signal<Float>.invert() -> Signal<Float>`.
     SignalInvert,
     /// Builds a `Sequence<T>` from `arg_count` popped `T` values (`T`
@@ -97,6 +105,18 @@ pub enum IntrinsicId {
     SequenceLengthAngle,
     SequenceLengthIntensity,
     SequenceLengthColor,
+    /// Constructs an `Effects.step(sequence: Sequence<T>, every: Duration)
+    /// -> Signal<T>` signal, monomorphized per element type like
+    /// `SignalConstant*`. Fixed arity (unlike `SequenceOf*`), but still
+    /// dispatched specially by `inception-vm`'s `Vm` rather than through
+    /// `eval_intrinsic`, for the same reasons `Effects*`/`SignalConstant*`
+    /// are: it must insert into `Vm`-owned mutable state (`SignalStore`)
+    /// and reads `clock.now()` for the signal's time origin.
+    EffectsStepInt,
+    EffectsStepFloat,
+    EffectsStepAngle,
+    EffectsStepIntensity,
+    EffectsStepColor,
 }
 
 impl IntrinsicId {
@@ -158,7 +178,11 @@ impl IntrinsicId {
             }
             IntrinsicId::SignalRangeAngle => &[Signal(ScalarValueType::Float), Angle, Angle],
             IntrinsicId::SignalPhase => &[Signal(ScalarValueType::Float), Angle],
-            IntrinsicId::SignalSpread => &[Signal(ScalarValueType::Float), Angle],
+            IntrinsicId::SignalSpreadFloat => &[Signal(ScalarValueType::Float), Angle],
+            IntrinsicId::SignalSpreadInt => &[Signal(ScalarValueType::Int), Angle],
+            IntrinsicId::SignalSpreadAngle => &[Signal(ScalarValueType::Angle), Angle],
+            IntrinsicId::SignalSpreadIntensity => &[Signal(ScalarValueType::Intensity), Angle],
+            IntrinsicId::SignalSpreadColor => &[Signal(ScalarValueType::Color), Angle],
             IntrinsicId::SignalInvert => &[Signal(ScalarValueType::Float)],
             IntrinsicId::SequenceOfInt
             | IntrinsicId::SequenceOfFloat
@@ -173,6 +197,11 @@ impl IntrinsicId {
             IntrinsicId::SequenceLengthAngle => &[Sequence(ScalarValueType::Angle)],
             IntrinsicId::SequenceLengthIntensity => &[Sequence(ScalarValueType::Intensity)],
             IntrinsicId::SequenceLengthColor => &[Sequence(ScalarValueType::Color)],
+            IntrinsicId::EffectsStepInt => &[Sequence(ScalarValueType::Int), Duration],
+            IntrinsicId::EffectsStepFloat => &[Sequence(ScalarValueType::Float), Duration],
+            IntrinsicId::EffectsStepAngle => &[Sequence(ScalarValueType::Angle), Duration],
+            IntrinsicId::EffectsStepIntensity => &[Sequence(ScalarValueType::Intensity), Duration],
+            IntrinsicId::EffectsStepColor => &[Sequence(ScalarValueType::Color), Duration],
         }
     }
 
@@ -202,9 +231,13 @@ impl IntrinsicId {
             | IntrinsicId::EffectsSaw
             | IntrinsicId::EffectsSquare
             | IntrinsicId::SignalPhase
-            | IntrinsicId::SignalSpread
+            | IntrinsicId::SignalSpreadFloat
             | IntrinsicId::SignalInvert
             | IntrinsicId::SignalRangeFloat => ValueType::Signal(ScalarValueType::Float),
+            IntrinsicId::SignalSpreadInt => ValueType::Signal(ScalarValueType::Int),
+            IntrinsicId::SignalSpreadAngle => ValueType::Signal(ScalarValueType::Angle),
+            IntrinsicId::SignalSpreadIntensity => ValueType::Signal(ScalarValueType::Intensity),
+            IntrinsicId::SignalSpreadColor => ValueType::Signal(ScalarValueType::Color),
             IntrinsicId::SignalRangeIntensity => ValueType::Signal(ScalarValueType::Intensity),
             IntrinsicId::SignalRangeAngle => ValueType::Signal(ScalarValueType::Angle),
             IntrinsicId::SequenceOfInt => ValueType::Sequence(ScalarValueType::Int),
@@ -217,6 +250,11 @@ impl IntrinsicId {
             | IntrinsicId::SequenceLengthAngle
             | IntrinsicId::SequenceLengthIntensity
             | IntrinsicId::SequenceLengthColor => ValueType::Int,
+            IntrinsicId::EffectsStepInt => ValueType::Signal(ScalarValueType::Int),
+            IntrinsicId::EffectsStepFloat => ValueType::Signal(ScalarValueType::Float),
+            IntrinsicId::EffectsStepAngle => ValueType::Signal(ScalarValueType::Angle),
+            IntrinsicId::EffectsStepIntensity => ValueType::Signal(ScalarValueType::Intensity),
+            IntrinsicId::EffectsStepColor => ValueType::Signal(ScalarValueType::Color),
         }
     }
 }

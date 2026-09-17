@@ -39,7 +39,17 @@ pub enum IntrinsicId {
     SignalRangeIntensity,
     SignalRangeAngle,
     SignalPhase,
-    SignalSpread,
+    /// `Signal<T>.spread(Angle) -> Signal<T>`, monomorphized per element
+    /// type — unlike `.range()`/`.phase()`/`.invert()` (Float-only,
+    /// oscillator-lineage-only), `.spread()` is also defined directly on
+    /// an `Effects.step(...)` signal, for any of the 5 `T`s a `Sequence<T>`
+    /// may hold (see `crate::methods`'s `Sequence`-adjacent spread table
+    /// and item 9 of the `Effects.step` task brief).
+    SignalSpreadFloat,
+    SignalSpreadInt,
+    SignalSpreadAngle,
+    SignalSpreadIntensity,
+    SignalSpreadColor,
     SignalInvert,
     /// Builds a `Sequence<T>` from `arg_count` popped `T` values (checked
     /// homogeneous by `lux-typeck` before this is ever resolved to — see
@@ -65,4 +75,13 @@ pub enum IntrinsicId {
     SequenceLengthAngle,
     SequenceLengthIntensity,
     SequenceLengthColor,
+    /// `Effects.step(sequence: Sequence<T>, every: Duration) -> Signal<T>`,
+    /// monomorphized per element type like `SequenceOf*`/`SequenceLength*`.
+    /// Fixed arity (exactly 2 operands), so — unlike `SequenceOf*` — this
+    /// needs no special variadic handling anywhere downstream.
+    EffectsStepInt,
+    EffectsStepFloat,
+    EffectsStepAngle,
+    EffectsStepIntensity,
+    EffectsStepColor,
 }

@@ -35,7 +35,9 @@ use crate::bounds::bound_for;
 use crate::error::TypeError;
 use crate::program::{TypedProgram, TypedScene};
 use crate::rules::{binary_op_symbol, binary_result_type, unary_result_type};
-use crate::stdlib_bridge::{from_param_type, sequence_element_param_type, to_param_type};
+use crate::stdlib_bridge::{
+    from_param_type, sequence_element_param_type, signal_element_param_type, to_param_type,
+};
 use crate::types::{SequenceElement, SignalElement, Type, resolve_annotation};
 
 /// Type-checks every scene in `hir`. Returns every diagnostic collected
@@ -542,7 +544,8 @@ impl Checker {
 
         let receiver_ty = receiver_ty?;
         match receiver_ty {
-            Type::Signal(SignalElement::Float) => self.check_signal_float_method(
+            Type::Signal(elem) => self.check_signal_method(
+                elem,
                 receiver,
                 method,
                 method_span,
@@ -561,7 +564,9 @@ impl Checker {
                     )
                     .with_help(
                         "`.range()`/`.phase()`/`.spread()`/`.invert()` are only defined on \
-                         `Signal<Float>`; `.length()` is only defined on `Sequence<T>`",
+                         `Signal<Float>`; `.spread()` is also defined on any other `Signal<T>` \
+                         built from `Effects.step(...)`; `.length()` is only defined on \
+                         `Sequence<T>`",
                     ),
                 );
                 None
@@ -569,9 +574,16 @@ impl Checker {
         }
     }
 
+    /// `<receiver: Signal<T>>.<method>(<args>)`. `Signal<Float>` has the
+    /// full builtin method set (`range`/`phase`/`spread`/`invert`); every
+    /// other `T` — reachable only via `Effects.step(sequence: Sequence<T>,
+    /// ...)` — has just `.spread()` (see item 9 of the `Effects.step`
+    /// task brief: the other three are meaningless for a signal that
+    /// isn't a continuous `0.0..1.0` value).
     #[allow(clippy::too_many_arguments)]
-    fn check_signal_float_method(
+    fn check_signal_method(
         &mut self,
+        elem: SignalElement,
         receiver: &HirExpr,
         method: &str,
         method_span: Span,
@@ -581,20 +593,34 @@ impl Checker {
     ) -> Option<Type> {
         // `.phase()` and `.spread()` both additionally require their
         // receiver to be, transitively through other `.phase()` calls, a
-        // direct `Effects` oscillator — see this function's caller-facing
-        // docs and `docs/stdlib/Signal.md` for why (both convert an angle
-        // into a phase shift, which needs to know the source's period, a
-        // concept only a base oscillator has). `.spread()` deliberately
-        // isn't itself chainable this way — see `is_phase_source_valid`'s
-        // docs.
-        if (method == "phase" || method == "spread") && !is_phase_source_valid(receiver) {
+        // direct `Effects` oscillator, *or* — for `.spread()` only — a
+        // direct `Effects.step(...)` call (see this function's
+        // caller-facing docs and `docs/stdlib/Signal.md` for why: all
+        // three convert an angle into a time/phase shift, which needs to
+        // know the source's period or step cadence, a concept a bare
+        // `Constant`/`Range`/`Invert` signal doesn't have). `.spread()`
+        // deliberately isn't itself chainable this way — see
+        // `is_phase_source_valid`'s docs.
+        if method == "phase" && !is_phase_source_valid(receiver) {
             self.errors.push(
                 TypeError::new(
-                    format!(
-                        "`.{method}()` can only be applied directly to an `Effects` oscillator \
-                         (`sine`/`triangle`/`saw`/`square`), or to another `.phase(...)` call \
-                         chained from one"
-                    ),
+                    "`.phase()` can only be applied directly to an `Effects` oscillator \
+                     (`sine`/`triangle`/`saw`/`square`), or to another `.phase(...)` call \
+                     chained from one"
+                        .to_string(),
+                    method_span,
+                )
+                .with_secondary_span(receiver.span()),
+            );
+            return None;
+        }
+        if method == "spread" && !is_spread_source_valid(receiver) {
+            self.errors.push(
+                TypeError::new(
+                    "`.spread()` can only be applied directly to an `Effects` oscillator \
+                     (`sine`/`triangle`/`saw`/`square`), to another `.phase(...)` call chained \
+                     from one, or directly to an `Effects.step(...)` call"
+                        .to_string(),
                     method_span,
                 )
                 .with_secondary_span(receiver.span()),
@@ -603,11 +629,20 @@ impl Checker {
         }
 
         let param_types: Vec<_> = arg_types.iter().copied().map(to_param_type).collect();
-        match lux_stdlib::resolve_signal_float_method(method, &param_types) {
+        let resolved = if elem == SignalElement::Float {
+            lux_stdlib::resolve_signal_float_method(method, &param_types)
+        } else {
+            lux_stdlib::resolve_non_float_signal_method(
+                signal_element_param_type(elem),
+                method,
+                &param_types,
+            )
+        };
+        match resolved {
             Ok(sig) => Some(from_param_type(sig.return_ty)),
             Err(err) => {
                 self.report_method_overload_error(
-                    Type::Signal(SignalElement::Float),
+                    Type::Signal(elem),
                     method,
                     method_span,
                     call_span,
@@ -685,6 +720,12 @@ impl Checker {
                         sequence_element_param_type(elem),
                         method,
                     ),
+                    Type::Signal(elem) if elem != SignalElement::Float => {
+                        lux_stdlib::non_float_signal_method_candidates(
+                            signal_element_param_type(elem),
+                            method,
+                        )
+                    }
                     _ => lux_stdlib::signal_float_method_candidates(method),
                 };
                 if method == "range" && arg_types.len() == 2 && arg_types[0] != arg_types[1] {
@@ -815,6 +856,20 @@ impl Checker {
                     );
                 }
             }
+            IntrinsicId::EffectsStepInt
+            | IntrinsicId::EffectsStepFloat
+            | IntrinsicId::EffectsStepAngle
+            | IntrinsicId::EffectsStepIntensity
+            | IntrinsicId::EffectsStepColor => {
+                if let [_, HirExpr::Literal(Literal::Duration(every), span)] = call.args.as_slice()
+                    && *every == 0
+                {
+                    self.errors.push(
+                        TypeError::new("`Effects.step`'s `every` must be greater than zero", *span)
+                            .with_help("a zero-duration step would divide by zero when sampled"),
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -870,16 +925,15 @@ impl Checker {
     }
 }
 
-/// Whether `.phase()` **or** `.spread()` may legally be applied to
-/// `receiver` — true if `receiver` is (transitively, through other
-/// `.phase()` calls) a direct `Effects.{sine,triangle,saw,square}` call.
-/// See `check_method_call`'s docs for why this is restricted rather than
-/// generic. Deliberately does **not** recurse through `.spread()` itself:
-/// `.spread(...).spread(...)` and `.spread(...).phase(...)` both stay
-/// rejected in V1 — `inception_vm::signal::SignalKind::Spread`'s `source`
-/// is only ever a base oscillator or a (already-flattened) `Phase` node,
-/// never another `Spread`, so there is nothing on the runtime side to
-/// resolve a chained `.spread()`/a `.phase()` built on top of one against.
+/// Whether `.phase()` may legally be applied to `receiver` — true if
+/// `receiver` is (transitively, through other `.phase()` calls) a direct
+/// `Effects.{sine,triangle,saw,square}` call. See `check_signal_method`'s
+/// docs for why this is restricted rather than generic. Deliberately does
+/// **not** recurse through `.spread()`: `.spread(...).phase(...)` stays
+/// rejected in V1 — `inception_vm::signal::SignalKind::Phase`'s `source`
+/// is only ever a base oscillator, never a `Spread`, so there is nothing
+/// on the runtime side to resolve a `.phase()` built on top of one
+/// against.
 fn is_phase_source_valid(receiver: &HirExpr) -> bool {
     match receiver {
         HirExpr::Call(call) => {
@@ -896,4 +950,30 @@ fn is_phase_source_valid(receiver: &HirExpr) -> bool {
         } if method == "phase" => is_phase_source_valid(receiver),
         _ => false,
     }
+}
+
+/// Whether `.spread()` may legally be applied to `receiver` — either
+/// [`is_phase_source_valid`]'s oscillator/`.phase(...)`-chain case
+/// (unchanged), or a direct `Effects.step(...)` call, for any element
+/// type (see item 9/10 of the `Effects.step` task brief:
+/// `inception_vm::signal::SignalKind::Spread`'s sample arm resolves a
+/// `Step` source directly, without needing an oscillator basis).
+/// Deliberately does **not** recurse through `.spread()` itself — same
+/// "not chainable with another `.spread(...)`" restriction
+/// `is_phase_source_valid` already documents.
+fn is_spread_source_valid(receiver: &HirExpr) -> bool {
+    is_phase_source_valid(receiver) || is_direct_effects_step_call(receiver)
+}
+
+fn is_direct_effects_step_call(receiver: &HirExpr) -> bool {
+    let HirExpr::Call(call) = receiver else {
+        return false;
+    };
+    let HirCallee::Std {
+        module_path, name, ..
+    } = &call.callee;
+    module_path.len() == 2
+        && module_path[0] == "std"
+        && module_path[1] == "Effects"
+        && name == "step"
 }

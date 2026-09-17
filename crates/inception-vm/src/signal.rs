@@ -35,6 +35,7 @@
 
 use inception_core::{Duration, Timestamp};
 
+use crate::sequence::{SequenceError, SequenceId, SequenceStore};
 use crate::value::Value;
 
 /// Everything a signal needs to sample itself: an absolute timestamp,
@@ -215,6 +216,27 @@ pub enum SignalKind {
     /// value outside `0.0..1.0` too, matching `.range()`'s own
     /// no-implicit-clamping-of-its-own-output stance.
     Invert { source: SignalId },
+    /// `Effects.step(sequence, every)`: strictly time-based, discrete
+    /// stepping through `sequence`'s elements — see
+    /// `docs/rfcs` and `Vm::exec_call_intrinsic`'s `EffectsStep*`
+    /// handling. Never copies `sequence`'s elements inline (same
+    /// `SequenceId`-indirection rationale as `Value::Sequence` itself);
+    /// sampling reads whichever element `elapsed / every` (floored, mod
+    /// the sequence's length) lands on, recomputed fresh from
+    /// `(context.now, started_at)` every time — never accumulated
+    /// frame-by-frame — so a missed frame never causes drift (item 1 of
+    /// the `Effects.step` task brief). `started_at` is this signal's
+    /// *construction* time (item 2), exactly like an oscillator's own
+    /// `started_at`. `sequence` is guaranteed non-empty for any Step built
+    /// from real Lux source (`Sequence.of()` is already a compile-time
+    /// error — see `lux-typeck`'s `check_sequence_of`), but `sample`
+    /// still checks defensively rather than risking a division by zero on
+    /// hand-corrupted bytecode.
+    Step {
+        sequence: SequenceId,
+        every: Duration,
+        started_at: Timestamp,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -238,10 +260,46 @@ pub enum SignalError {
     /// exists.
     UnsupportedPhaseSource(SignalId),
     /// A `Spread` node's `source` doesn't resolve to a base oscillator
-    /// (directly, or through one `Phase`). Unreachable from real Lux
-    /// source for the same reason `UnsupportedPhaseSource` is — see
-    /// `SignalKind::Spread`'s docs.
+    /// (directly, or through one `Phase`) or a `Step`. Unreachable from
+    /// real Lux source for the same reason `UnsupportedPhaseSource` is —
+    /// see `SignalKind::Spread`'s docs.
     UnsupportedSpreadSource(SignalId),
+    /// A `Step` (bare or spread) referenced a `SequenceId` this signal's
+    /// owning `Vm` doesn't know about — unreachable for a verified module
+    /// (every `Step` is built from a `Value::Sequence` that must already
+    /// exist), kept only for the same defensive reason every other
+    /// `SignalError` exists.
+    UnknownSequence(SequenceId),
+    /// A `Step` referenced an empty sequence. Unreachable from real Lux
+    /// source — `Sequence.of()` is already a compile-time error (see
+    /// `lux-typeck`'s `check_sequence_of`) — kept only so `sample` never
+    /// has to divide by a zero-length cycle.
+    EmptySequence(SequenceId),
+    /// A `Step`'s `every` is zero. A *constant* zero `every` is already
+    /// rejected at compile time (mirroring `Effects.sine`/etc.'s zero-period
+    /// check); `Vm::exec_call_intrinsic` additionally rejects a
+    /// non-constant zero `every` before ever constructing the signal (see
+    /// `VmErrorKind::InvalidSignalPeriod`) — so this is unreachable outside
+    /// hand-built bytecode, kept only so `sample` never divides by a
+    /// zero-length cycle.
+    ZeroStepInterval(SequenceId),
+}
+
+impl From<SequenceError> for SignalError {
+    /// `SequenceError::IndexOutOfBounds` can't actually occur here: every
+    /// index `Step`'s sampling computes is derived as `_ % length`, always
+    /// `< length` by construction — this conversion exists only so `?`
+    /// works uniformly on `sequences.get(...)`'s `Result`, not because
+    /// that arm is reachable. Mapped to `UnknownSequence` rather than
+    /// modeled as its own `SignalError` variant, since it's not a
+    /// meaningfully distinct failure for anything sampling a `Step` could
+    /// do differently about it.
+    fn from(err: SequenceError) -> Self {
+        match err {
+            SequenceError::UnknownSequence(id) => SignalError::UnknownSequence(id),
+            SequenceError::IndexOutOfBounds { id, .. } => SignalError::UnknownSequence(id),
+        }
+    }
 }
 
 /// An append-only arena of signal definitions, indexed by [`SignalId`].
@@ -302,10 +360,17 @@ impl SignalStore {
     /// loops or user recursion in this milestone, so that depth is exactly
     /// the source file's own written nesting, not something a program can
     /// grow unboundedly at runtime.
+    ///
+    /// Takes `sequences` (the same `Vm`'s `crate::sequence::SequenceStore`)
+    /// purely to let [`SignalKind::Step`] read its elements — every other
+    /// `SignalKind` ignores it entirely. This is the one place `sample`
+    /// depends on anything beyond `self`/`context`; see `SignalKind::Step`'s
+    /// docs for why a `Step` doesn't copy its sequence inline instead.
     pub fn sample(
         &self,
         id: SignalId,
         context: impl Into<SignalSampleContext>,
+        sequences: &SequenceStore,
     ) -> Result<Value, SignalError> {
         let context = context.into();
         let definition = self
@@ -327,7 +392,7 @@ impl SignalStore {
                 Value::Float(square_wave(phase_at(context.now, started_at, period)))
             }
             SignalKind::Range { source, min, max } => {
-                let x = match self.sample(source, context)? {
+                let x = match self.sample(source, context, sequences)? {
                     Value::Float(f) => f.clamp(0.0, 1.0),
                     _ => unreachable!(
                         "SignalStore::sample: Range source must sample to Float — \
@@ -369,30 +434,56 @@ impl SignalStore {
                 source,
                 amount_millideg,
             } => {
-                let (period, started_at, waveform, static_offset_millideg) = self
-                    .oscillator_basis(source)
-                    .ok_or(SignalError::UnsupportedSpreadSource(source))?;
                 // `i * amount / n`, never `i * amount / (n - 1)` — see
                 // `SignalKind::Spread`'s docs for why the latter would be
                 // wrong. Guarded against `fixture_count == 0` (item 10):
                 // that combination can't come from a real binding (the
                 // linker rejects an empty role), but `sample` never
-                // trusts that blindly.
+                // trusts that blindly. Shared by both branches below:
+                // an oscillator interprets this as a phase fraction of
+                // its own period, a `Step` as a time fraction of its
+                // full sequence cycle (`every * length`) — see item 10
+                // of the `Effects.step` task brief.
                 let spread_offset_millideg = if context.fixture_count == 0 {
                     0
                 } else {
                     (amount_millideg as i64 * context.fixture_index as i64
                         / context.fixture_count as i64) as i32
                 };
-                let total_offset_millideg =
-                    (static_offset_millideg + spread_offset_millideg).rem_euclid(360_000);
-                let base_phase = phase_at(context.now, started_at, period);
-                let offset_fraction = total_offset_millideg as f64 / 360_000.0;
-                let shifted = (base_phase + offset_fraction).rem_euclid(1.0);
-                Value::Float(waveform(shifted))
+
+                match self.definitions.get(source.0 as usize).map(|d| d.kind) {
+                    Some(SignalKind::Step {
+                        sequence,
+                        every,
+                        started_at,
+                    }) => sample_step(
+                        sequences,
+                        sequence,
+                        every,
+                        started_at,
+                        context.now,
+                        spread_offset_millideg,
+                    )?,
+                    _ => {
+                        let (period, started_at, waveform, static_offset_millideg) = self
+                            .oscillator_basis(source)
+                            .ok_or(SignalError::UnsupportedSpreadSource(source))?;
+                        let total_offset_millideg =
+                            (static_offset_millideg + spread_offset_millideg).rem_euclid(360_000);
+                        let base_phase = phase_at(context.now, started_at, period);
+                        let offset_fraction = total_offset_millideg as f64 / 360_000.0;
+                        let shifted = (base_phase + offset_fraction).rem_euclid(1.0);
+                        Value::Float(waveform(shifted))
+                    }
+                }
             }
+            SignalKind::Step {
+                sequence,
+                every,
+                started_at,
+            } => sample_step(sequences, sequence, every, started_at, context.now, 0)?,
             SignalKind::Invert { source } => {
-                let x = match self.sample(source, context)? {
+                let x = match self.sample(source, context, sequences)? {
                     Value::Float(f) => f,
                     _ => unreachable!(
                         "SignalStore::sample: Invert source must sample to Float — \
@@ -508,6 +599,52 @@ fn phase_at(at: Timestamp, started_at: Timestamp, period: Duration) -> f64 {
     remainder as f64 / period_nanos as f64
 }
 
+/// The element of `sequence` that `SignalKind::Step`/`SignalKind::Spread`
+/// (wrapping a `Step`) sample to at `now`. Shared by both call sites (see
+/// their sample arms) — `offset_millideg` is `0` for a bare `Step`, or the
+/// per-fixture spread share for a `Spread`-wrapped one (see
+/// `SignalKind::Spread`'s sample arm), interpreted as a fraction of the
+/// full sequence cycle (`every * length`) rather than of a single
+/// element's `every` — this is what item 10 of the `Effects.step` task
+/// brief means by "fixture-specific phase offset -> equivalent time
+/// offset within full sequence cycle".
+///
+/// All-integer nanosecond arithmetic (`i128` only as an overflow-safe
+/// intermediate for the offset's multiplication) — no floating-point
+/// drift, and `elapsed`/`shifted_ns` are recomputed from scratch on every
+/// call, never accumulated, so a missed frame or a non-monotonic `now`
+/// never skews which index this lands on (items 1/7 of the task brief).
+/// Returns a structured [`SignalError`], never panics, on an unknown
+/// sequence, an empty one, or a zero `every` — see those variants' docs
+/// for why each is unreachable from real Lux source but still guarded.
+fn sample_step(
+    sequences: &SequenceStore,
+    sequence: SequenceId,
+    every: Duration,
+    started_at: Timestamp,
+    now: Timestamp,
+    offset_millideg: i32,
+) -> Result<Value, SignalError> {
+    let length = sequences
+        .length(sequence)
+        .ok_or(SignalError::UnknownSequence(sequence))?;
+    if length == 0 {
+        return Err(SignalError::EmptySequence(sequence));
+    }
+    let every_ns = every.as_nanos();
+    if every_ns == 0 {
+        return Err(SignalError::ZeroStepInterval(sequence));
+    }
+    let cycle_ns = every_ns.saturating_mul(length as u64);
+    let elapsed_ns = now.as_nanos().saturating_sub(started_at.as_nanos()) as i128;
+    let offset_ns = (offset_millideg as i128 * cycle_ns as i128) / 360_000i128;
+    let shifted_ns = (elapsed_ns + offset_ns).rem_euclid(cycle_ns as i128) as u64;
+    let index = ((shifted_ns / every_ns) % length as u64) as usize;
+    sequences
+        .get(sequence, index as i64)
+        .map_err(SignalError::from)
+}
+
 fn sine_wave(phase: f64) -> f64 {
     (0.5 + 0.5 * (std::f64::consts::TAU * phase).sin()).clamp(0.0, 1.0)
 }
@@ -540,7 +677,10 @@ mod tests {
             Timestamp::from_secs(1),
             Timestamp::from_secs(3600),
         ] {
-            assert_eq!(store.sample(id, at), Ok(Value::Intensity(32767)));
+            assert_eq!(
+                store.sample(id, at, &SequenceStore::new()),
+                Ok(Value::Intensity(32767))
+            );
         }
     }
 
@@ -551,7 +691,10 @@ mod tests {
         let id = store.insert(SignalKind::Constant(Value::Color(red)));
 
         for at in [Timestamp::ZERO, Timestamp::from_secs(1)] {
-            assert_eq!(store.sample(id, at), Ok(Value::Color(red)));
+            assert_eq!(
+                store.sample(id, at, &SequenceStore::new()),
+                Ok(Value::Color(red))
+            );
         }
     }
 
@@ -561,9 +704,9 @@ mod tests {
         let id = store.insert(SignalKind::Constant(Value::Float(1.5)));
         let at = Timestamp::from_millis(1234);
 
-        let first = store.sample(id, at);
+        let first = store.sample(id, at, &SequenceStore::new());
         for _ in 0..100 {
-            assert_eq!(store.sample(id, at), first);
+            assert_eq!(store.sample(id, at, &SequenceStore::new()), first);
         }
     }
 
@@ -578,7 +721,10 @@ mod tests {
             Timestamp::from_secs(50),
             Timestamp::ZERO,
         ] {
-            assert_eq!(store.sample(id, at), Ok(Value::Int(42)));
+            assert_eq!(
+                store.sample(id, at, &SequenceStore::new()),
+                Ok(Value::Int(42))
+            );
         }
     }
 
@@ -586,7 +732,7 @@ mod tests {
     fn unknown_signal_id_is_a_structured_error_not_a_panic() {
         let store = SignalStore::new();
         assert_eq!(
-            store.sample(SignalId(0), Timestamp::ZERO),
+            store.sample(SignalId(0), Timestamp::ZERO, &SequenceStore::new()),
             Err(SignalError::UnknownSignal(SignalId(0)))
         );
     }
@@ -622,7 +768,9 @@ mod tests {
         });
         for (millis, expected) in [(0, 0.5), (500, 1.0), (1000, 0.5), (1500, 0.0), (2000, 0.5)] {
             assert_float_close(
-                store.sample(id, Timestamp::from_millis(millis)).unwrap(),
+                store
+                    .sample(id, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap(),
                 expected,
             );
         }
@@ -638,7 +786,9 @@ mod tests {
         });
         for (millis, expected) in [(0, 0.0), (500, 0.5), (1000, 1.0), (1500, 0.5), (2000, 0.0)] {
             assert_float_close(
-                store.sample(id, Timestamp::from_millis(millis)).unwrap(),
+                store
+                    .sample(id, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap(),
                 expected,
             );
         }
@@ -660,7 +810,9 @@ mod tests {
             (2000, 0.0),
         ] {
             assert_float_close(
-                store.sample(id, Timestamp::from_millis(millis)).unwrap(),
+                store
+                    .sample(id, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap(),
                 expected,
             );
         }
@@ -685,7 +837,9 @@ mod tests {
             (2000, 1.0),
         ] {
             assert_float_close(
-                store.sample(id, Timestamp::from_millis(millis)).unwrap(),
+                store
+                    .sample(id, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap(),
                 expected,
             );
         }
@@ -700,8 +854,18 @@ mod tests {
             period: Duration::from_millis(100),
             started_at: Timestamp::ZERO,
         });
-        assert_float_close(store.sample(id, Timestamp::from_millis(25)).unwrap(), 0.25);
-        assert_float_close(store.sample(id, Timestamp::from_millis(150)).unwrap(), 0.5);
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(25), &SequenceStore::new())
+                .unwrap(),
+            0.25,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(150), &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
     }
 
     /// Item 57: a long (1h) period, sampled at several positions.
@@ -712,9 +876,24 @@ mod tests {
             period: Duration::from_secs(3600),
             started_at: Timestamp::ZERO,
         });
-        assert_float_close(store.sample(id, Timestamp::from_secs(900)).unwrap(), 0.25);
-        assert_float_close(store.sample(id, Timestamp::from_secs(1800)).unwrap(), 0.5);
-        assert_float_close(store.sample(id, Timestamp::from_secs(3600)).unwrap(), 0.0);
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_secs(900), &SequenceStore::new())
+                .unwrap(),
+            0.25,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_secs(1800), &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_secs(3600), &SequenceStore::new())
+                .unwrap(),
+            0.0,
+        );
     }
 
     /// Item 58: a non-zero `started_at` shifts the cycle's origin, not
@@ -727,9 +906,24 @@ mod tests {
             period: Duration::from_secs(2),
             started_at: Timestamp::from_secs(5),
         });
-        assert_float_close(store.sample(id, Timestamp::from_millis(5000)).unwrap(), 0.5);
-        assert_float_close(store.sample(id, Timestamp::from_millis(5500)).unwrap(), 1.0);
-        assert_float_close(store.sample(id, Timestamp::from_millis(6000)).unwrap(), 0.5);
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(5000), &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(5500), &SequenceStore::new())
+                .unwrap(),
+            1.0,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(6000), &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
     }
 
     /// Item 59: only ever sampling `0ms`, `1750ms`, `5250ms` (never the
@@ -742,13 +936,22 @@ mod tests {
             period: Duration::from_secs(2),
             started_at: Timestamp::ZERO,
         });
-        assert_float_close(store.sample(id, Timestamp::from_millis(0)).unwrap(), 0.0);
         assert_float_close(
-            store.sample(id, Timestamp::from_millis(1750)).unwrap(),
+            store
+                .sample(id, Timestamp::from_millis(0), &SequenceStore::new())
+                .unwrap(),
+            0.0,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_millis(1750), &SequenceStore::new())
+                .unwrap(),
             0.875,
         );
         assert_float_close(
-            store.sample(id, Timestamp::from_millis(5250)).unwrap(),
+            store
+                .sample(id, Timestamp::from_millis(5250), &SequenceStore::new())
+                .unwrap(),
             0.625,
         );
     }
@@ -763,9 +966,9 @@ mod tests {
             started_at: Timestamp::ZERO,
         });
         let at = Timestamp::from_millis(1234);
-        let first = store.sample(id, at);
+        let first = store.sample(id, at, &SequenceStore::new());
         for _ in 0..100 {
-            assert_eq!(store.sample(id, at), first);
+            assert_eq!(store.sample(id, at, &SequenceStore::new()), first);
         }
     }
 
@@ -779,7 +982,9 @@ mod tests {
         });
         for (secs, expected) in [(4, 0.0), (1, 1.0), (7, 1.0), (0, 0.0)] {
             assert_float_close(
-                store.sample(id, Timestamp::from_secs(secs)).unwrap(),
+                store
+                    .sample(id, Timestamp::from_secs(secs), &SequenceStore::new())
+                    .unwrap(),
                 expected,
             );
         }
@@ -794,8 +999,18 @@ mod tests {
             period: Duration::from_secs(2),
             started_at: Timestamp::from_secs(10),
         });
-        assert_float_close(store.sample(id, Timestamp::ZERO).unwrap(), 0.5);
-        assert_float_close(store.sample(id, Timestamp::from_secs(5)).unwrap(), 0.5);
+        assert_float_close(
+            store
+                .sample(id, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
+        assert_float_close(
+            store
+                .sample(id, Timestamp::from_secs(5), &SequenceStore::new())
+                .unwrap(),
+            0.5,
+        );
     }
 
     /// Item 15: every oscillator's output stays within `[0.0, 1.0]`
@@ -823,7 +1038,9 @@ mod tests {
         });
         for millis in 0..2000u64 {
             for id in [sine, triangle, saw, square] {
-                let Value::Float(v) = store.sample(id, Timestamp::from_millis(millis)).unwrap()
+                let Value::Float(v) = store
+                    .sample(id, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap()
                 else {
                     panic!("expected Float");
                 };
@@ -851,7 +1068,10 @@ mod tests {
                 min: Value::Float(10.0),
                 max: Value::Float(20.0),
             });
-            let Value::Float(v) = store.sample(range, Timestamp::ZERO).unwrap() else {
+            let Value::Float(v) = store
+                .sample(range, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap()
+            else {
                 panic!("expected Float");
             };
             assert!(
@@ -882,7 +1102,9 @@ mod tests {
                 max: Value::Intensity(max),
             });
             assert_eq!(
-                store.sample(range, Timestamp::ZERO).unwrap(),
+                store
+                    .sample(range, Timestamp::ZERO, &SequenceStore::new())
+                    .unwrap(),
                 Value::Intensity(expected),
                 "x={x}"
             );
@@ -901,7 +1123,9 @@ mod tests {
                 max: Value::Angle(180_000),
             });
             assert_eq!(
-                store.sample(range, Timestamp::ZERO).unwrap(),
+                store
+                    .sample(range, Timestamp::ZERO, &SequenceStore::new())
+                    .unwrap(),
                 Value::Angle(expected_millideg),
                 "x={x}"
             );
@@ -922,7 +1146,9 @@ mod tests {
                 max: Value::Intensity(0),
             });
             assert_eq!(
-                store.sample(range, Timestamp::ZERO).unwrap(),
+                store
+                    .sample(range, Timestamp::ZERO, &SequenceStore::new())
+                    .unwrap(),
                 Value::Intensity(expected),
                 "x={x}"
             );
@@ -947,11 +1173,15 @@ mod tests {
             max: Value::Float(10.0),
         });
         assert_eq!(
-            store.sample(range_below, Timestamp::ZERO).unwrap(),
+            store
+                .sample(range_below, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
             Value::Float(0.0)
         );
         assert_eq!(
-            store.sample(range_above, Timestamp::ZERO).unwrap(),
+            store
+                .sample(range_above, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
             Value::Float(10.0)
         );
     }
@@ -968,7 +1198,11 @@ mod tests {
         });
         let assert_close = |at_ms: u64, expected: f64| {
             let Value::Float(v) = store
-                .sample(shifted, Timestamp::from_millis(at_ms))
+                .sample(
+                    shifted,
+                    Timestamp::from_millis(at_ms),
+                    &SequenceStore::new(),
+                )
                 .unwrap()
             else {
                 panic!("expected Float");
@@ -994,15 +1228,23 @@ mod tests {
             offset_millideg: 180_000,
         });
         let (Value::Float(shifted_at_zero), Value::Float(source_at_zero)) = (
-            store.sample(shifted, Timestamp::ZERO).unwrap(),
-            store.sample(source, Timestamp::ZERO).unwrap(),
+            store
+                .sample(shifted, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
+            store
+                .sample(source, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
         ) else {
             panic!("expected Float");
         };
         assert!((shifted_at_zero - source_at_zero).abs() < 1e-9);
         assert_ne!(
-            store.sample(shifted, Timestamp::from_millis(500)).unwrap(),
-            store.sample(source, Timestamp::from_millis(500)).unwrap(),
+            store
+                .sample(shifted, Timestamp::from_millis(500), &SequenceStore::new())
+                .unwrap(),
+            store
+                .sample(source, Timestamp::from_millis(500), &SequenceStore::new())
+                .unwrap(),
         );
     }
 
@@ -1018,10 +1260,18 @@ mod tests {
         for millis in [0, 250, 999, 1750] {
             assert_eq!(
                 store
-                    .sample(shifted, Timestamp::from_millis(millis))
+                    .sample(
+                        shifted,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
                 store
-                    .sample(source, Timestamp::from_millis(millis))
+                    .sample(
+                        source,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
             );
         }
@@ -1045,10 +1295,18 @@ mod tests {
         for millis in [0, 500, 1000] {
             assert_eq!(
                 store
-                    .sample(phase_450, Timestamp::from_millis(millis))
+                    .sample(
+                        phase_450,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
                 store
-                    .sample(phase_90, Timestamp::from_millis(millis))
+                    .sample(
+                        phase_90,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
             );
         }
@@ -1072,10 +1330,18 @@ mod tests {
         for millis in [0, 333, 1999] {
             assert_eq!(
                 store
-                    .sample(phase_neg_90, Timestamp::from_millis(millis))
+                    .sample(
+                        phase_neg_90,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
                 store
-                    .sample(phase_270, Timestamp::from_millis(millis))
+                    .sample(
+                        phase_270,
+                        Timestamp::from_millis(millis),
+                        &SequenceStore::new()
+                    )
                     .unwrap(),
             );
         }
@@ -1093,7 +1359,7 @@ mod tests {
             offset_millideg: 90_000,
         });
         assert_eq!(
-            store.sample(bad_phase, Timestamp::ZERO),
+            store.sample(bad_phase, Timestamp::ZERO, &SequenceStore::new()),
             Err(SignalError::UnsupportedPhaseSource(constant))
         );
     }
@@ -1104,7 +1370,10 @@ mod tests {
         let mut store = SignalStore::new();
         let source = store.insert(SignalKind::Constant(Value::Float(0.3)));
         let inverted = store.insert(SignalKind::Invert { source });
-        let Value::Float(v) = store.sample(inverted, Timestamp::ZERO).unwrap() else {
+        let Value::Float(v) = store
+            .sample(inverted, Timestamp::ZERO, &SequenceStore::new())
+            .unwrap()
+        else {
             panic!("expected Float");
         };
         assert!((v - 0.7).abs() < 1e-9);
@@ -1128,12 +1397,16 @@ mod tests {
         // phased sine at t=0 reads 1.0 (see `phase_90_degrees_shifts_a_quarter_cycle`),
         // so range(20%, 100%) at x=1.0 must read exactly 100%.
         assert_eq!(
-            store.sample(ranged, Timestamp::ZERO).unwrap(),
+            store
+                .sample(ranged, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
             Value::Intensity(65535)
         );
         // at t=500ms, phased sine reads 0.5, the midpoint of the range.
         assert_eq!(
-            store.sample(ranged, Timestamp::from_millis(500)).unwrap(),
+            store
+                .sample(ranged, Timestamp::from_millis(500), &SequenceStore::new())
+                .unwrap(),
             Value::Intensity(39321)
         );
     }
@@ -1151,7 +1424,10 @@ mod tests {
         });
         for (fixture_index, expected_offset_deg) in [(0, 0), (1, 90), (2, 180), (3, 270)] {
             let context = SignalSampleContext::new(Timestamp::ZERO, fixture_index, 4);
-            let Value::Float(spread_value) = store.sample(spread, context).unwrap() else {
+            let Value::Float(spread_value) = store
+                .sample(spread, context, &SequenceStore::new())
+                .unwrap()
+            else {
                 panic!("expected Float");
             };
             // Compare against the unshifted sine sampled at the
@@ -1161,6 +1437,7 @@ mod tests {
                 .sample(
                     sine,
                     Timestamp::from_millis((expected_offset_deg * 2000 / 360) as u64),
+                    &SequenceStore::new(),
                 )
                 .unwrap()
             else {
@@ -1185,13 +1462,17 @@ mod tests {
         });
         for (fixture_index, expected_offset_deg) in [(0, 0), (1, 45), (2, 90), (3, 135)] {
             let context = SignalSampleContext::new(Timestamp::ZERO, fixture_index, 4);
-            let Value::Float(spread_value) = store.sample(spread, context).unwrap() else {
+            let Value::Float(spread_value) = store
+                .sample(spread, context, &SequenceStore::new())
+                .unwrap()
+            else {
                 panic!("expected Float");
             };
             let Value::Float(expected) = store
                 .sample(
                     sine,
                     Timestamp::from_millis((expected_offset_deg * 2000 / 360) as u64),
+                    &SequenceStore::new(),
                 )
                 .unwrap()
             else {
@@ -1217,8 +1498,12 @@ mod tests {
         for millis in [0, 250, 999, 1750] {
             let context = SignalSampleContext::new(Timestamp::from_millis(millis), 0, 1);
             assert_eq!(
-                store.sample(spread, context).unwrap(),
-                store.sample(sine, Timestamp::from_millis(millis)).unwrap(),
+                store
+                    .sample(spread, context, &SequenceStore::new())
+                    .unwrap(),
+                store
+                    .sample(sine, Timestamp::from_millis(millis), &SequenceStore::new())
+                    .unwrap(),
             );
         }
     }
@@ -1235,8 +1520,12 @@ mod tests {
         });
         let context = SignalSampleContext::new(Timestamp::ZERO, 0, 0);
         assert_eq!(
-            store.sample(spread, context).unwrap(),
-            store.sample(sine, Timestamp::ZERO).unwrap(),
+            store
+                .sample(spread, context, &SequenceStore::new())
+                .unwrap(),
+            store
+                .sample(sine, Timestamp::ZERO, &SequenceStore::new())
+                .unwrap(),
         );
     }
 
@@ -1260,11 +1549,18 @@ mod tests {
             let spread_offset_deg = 90 * fixture_index as i32;
             let total_offset_millideg = 45_000 + spread_offset_deg * 1000;
             let expected_millis = (total_offset_millideg as i64 * 2000 / 360_000) as u64;
-            let Value::Float(spread_value) = store.sample(spread, context).unwrap() else {
+            let Value::Float(spread_value) = store
+                .sample(spread, context, &SequenceStore::new())
+                .unwrap()
+            else {
                 panic!("expected Float");
             };
             let Value::Float(expected) = store
-                .sample(sine, Timestamp::from_millis(expected_millis))
+                .sample(
+                    sine,
+                    Timestamp::from_millis(expected_millis),
+                    &SequenceStore::new(),
+                )
                 .unwrap()
             else {
                 panic!("expected Float");
@@ -1292,10 +1588,18 @@ mod tests {
         // Regardless of what (if anything) was sampled before, jumping
         // straight to an irregular timestamp reads the same value as
         // sampling it directly.
-        let direct = store.sample(spread, context_at(1750)).unwrap();
-        let _ = store.sample(spread, context_at(0)).unwrap();
-        let _ = store.sample(spread, context_at(333)).unwrap();
-        let after_skips = store.sample(spread, context_at(1750)).unwrap();
+        let direct = store
+            .sample(spread, context_at(1750), &SequenceStore::new())
+            .unwrap();
+        let _ = store
+            .sample(spread, context_at(0), &SequenceStore::new())
+            .unwrap();
+        let _ = store
+            .sample(spread, context_at(333), &SequenceStore::new())
+            .unwrap();
+        let after_skips = store
+            .sample(spread, context_at(1750), &SequenceStore::new())
+            .unwrap();
         assert_eq!(direct, after_skips);
     }
 
@@ -1312,7 +1616,7 @@ mod tests {
             amount_millideg: 360_000,
         });
         assert_eq!(
-            store.sample(bad_spread, Timestamp::ZERO),
+            store.sample(bad_spread, Timestamp::ZERO, &SequenceStore::new()),
             Err(SignalError::UnsupportedSpreadSource(constant))
         );
     }
@@ -1338,5 +1642,272 @@ mod tests {
         );
         // `a` itself is untouched — still a plain Sine.
         assert!(matches!(store.kind_of(a), Some(SignalKind::Sine { .. })));
+    }
+
+    fn palette() -> (SequenceStore, SequenceId) {
+        let mut sequences = SequenceStore::new();
+        let id = sequences.insert(vec![Value::Int(0), Value::Int(1), Value::Int(2)]);
+        (sequences, id)
+    }
+
+    /// The task brief's own worked example: `0.0s -> element 0`,
+    /// `0.5s -> element 1`, `1.0s -> element 2`, `1.5s -> element 0`
+    /// (looping), for a 3-element sequence stepped every 500ms.
+    #[test]
+    fn step_loops_through_elements_on_a_strict_time_cadence() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        for (millis, expected) in [
+            (0, 0),
+            (499, 0),
+            (500, 1),
+            (999, 1),
+            (1000, 2),
+            (1499, 2),
+            (1500, 0),
+            (2000, 1),
+        ] {
+            assert_eq!(
+                store.sample(step, Timestamp::from_millis(millis), &sequences),
+                Ok(Value::Int(expected)),
+                "at {millis}ms"
+            );
+        }
+    }
+
+    /// Item 2: the signal's origin is its *construction* time, not
+    /// absolute zero — sampled here directly against a non-zero
+    /// `started_at` (the `Vm`-level "wait 2s; then step(...)" scenario is
+    /// covered in `inception-vm`'s e2e tests).
+    #[test]
+    fn step_origin_is_started_at_not_absolute_zero() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::from_secs(2),
+        });
+        assert_eq!(
+            store.sample(step, Timestamp::from_secs(2), &sequences),
+            Ok(Value::Int(0))
+        );
+        assert_eq!(
+            store.sample(step, Timestamp::from_millis(2500), &sequences),
+            Ok(Value::Int(1))
+        );
+        // Sampling before the origin clamps to element 0, same policy as
+        // an oscillator sampled before its own `started_at`.
+        assert_eq!(
+            store.sample(step, Timestamp::ZERO, &sequences),
+            Ok(Value::Int(0))
+        );
+    }
+
+    /// Item 1/7: a missed frame never causes drift — sampling out of
+    /// order (`4s`, `1s`, `7s`) still returns exactly what a direct
+    /// sample at each of those timestamps would.
+    #[test]
+    fn step_sampling_is_correct_regardless_of_order() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_secs(1),
+            started_at: Timestamp::ZERO,
+        });
+        for (secs, expected) in [(4, 1), (1, 1), (7, 1), (0, 0), (2, 2)] {
+            assert_eq!(
+                store.sample(step, Timestamp::from_secs(secs), &sequences),
+                Ok(Value::Int(expected)),
+                "at {secs}s"
+            );
+        }
+    }
+
+    #[test]
+    fn step_sampling_is_stable_across_repeated_calls() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        let at = Timestamp::from_millis(1234);
+        let first = store.sample(step, at, &sequences);
+        for _ in 0..100 {
+            assert_eq!(store.sample(step, at, &sequences), first);
+        }
+    }
+
+    #[test]
+    fn step_on_unknown_sequence_is_a_structured_error_not_a_panic() {
+        let mut store = SignalStore::new();
+        let bogus = SequenceId(0);
+        let step = store.insert(SignalKind::Step {
+            sequence: bogus,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        assert_eq!(
+            store.sample(step, Timestamp::ZERO, &SequenceStore::new()),
+            Err(SignalError::UnknownSequence(bogus))
+        );
+    }
+
+    #[test]
+    fn step_on_empty_sequence_is_a_structured_error_not_a_panic() {
+        let mut sequences = SequenceStore::new();
+        let empty = sequences.insert(vec![]);
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence: empty,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        assert_eq!(
+            store.sample(step, Timestamp::ZERO, &sequences),
+            Err(SignalError::EmptySequence(empty))
+        );
+    }
+
+    #[test]
+    fn step_with_zero_every_is_a_structured_error_not_a_panic() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::ZERO,
+            started_at: Timestamp::ZERO,
+        });
+        assert_eq!(
+            store.sample(step, Timestamp::ZERO, &sequences),
+            Err(SignalError::ZeroStepInterval(sequence))
+        );
+    }
+
+    /// Item 10 of the `Effects.step` task brief, the exact worked example:
+    /// 4 elements stepped every 500ms (a 2s full cycle), spread 360deg
+    /// over 4 fixtures — fixture `i` reads element `i` at `t=0`, i.e. an
+    /// effective time offset of `i * 500ms`.
+    #[test]
+    fn spread_on_step_distributes_a_time_offset_across_fixtures() {
+        let mut sequences = SequenceStore::new();
+        let sequence = sequences.insert(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+        ]);
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        let spread = store.insert(SignalKind::Spread {
+            source: step,
+            amount_millideg: 360_000,
+        });
+
+        for (fixture_index, expected_element) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
+            let context = SignalSampleContext::new(Timestamp::ZERO, fixture_index, 4);
+            assert_eq!(
+                store.sample(spread, context, &sequences),
+                Ok(Value::Int(expected_element)),
+                "fixture {fixture_index}"
+            );
+        }
+    }
+
+    /// A half-cycle (180deg) spread over the same 4-fixture/4-element
+    /// setup distributes a 1s (half of the 2s cycle) offset: fixture `i`
+    /// effectively reads `250ms * i` ahead.
+    #[test]
+    fn spread_on_step_with_a_partial_turn_distributes_a_fractional_offset() {
+        let mut sequences = SequenceStore::new();
+        let sequence = sequences.insert(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+        ]);
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        let spread = store.insert(SignalKind::Spread {
+            source: step,
+            amount_millideg: 180_000,
+        });
+
+        // 180deg over 4 fixtures: offsets 0, 250, 500, 750ms -> elements
+        // (250ms alone isn't a full step yet, so fixture 1 still reads
+        // element 0 at t=0; fixture 2's 500ms offset lands exactly on
+        // element 1).
+        for (fixture_index, expected_element) in [(0, 0), (1, 0), (2, 1), (3, 1)] {
+            let context = SignalSampleContext::new(Timestamp::ZERO, fixture_index, 4);
+            assert_eq!(
+                store.sample(spread, context, &sequences),
+                Ok(Value::Int(expected_element)),
+                "fixture {fixture_index}"
+            );
+        }
+    }
+
+    /// A single-fixture sample (`fixture_count: 1`, the default outside
+    /// any real multi-fixture binding) always gets offset `0`, identical
+    /// to the unshifted `Step` — same policy as spread over an oscillator.
+    #[test]
+    fn spread_on_step_with_a_single_fixture_is_a_no_op() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        let spread = store.insert(SignalKind::Spread {
+            source: step,
+            amount_millideg: 360_000,
+        });
+        for millis in [0, 250, 750, 1600] {
+            let context = SignalSampleContext::new(Timestamp::from_millis(millis), 0, 1);
+            assert_eq!(
+                store.sample(spread, context, &sequences),
+                store.sample(step, Timestamp::from_millis(millis), &sequences),
+                "at {millis}ms"
+            );
+        }
+    }
+
+    /// An empty group (`fixture_count: 0`) never divides by zero — same
+    /// defensive policy as spread over an oscillator.
+    #[test]
+    fn spread_on_step_with_zero_fixtures_does_not_panic() {
+        let (sequences, sequence) = palette();
+        let mut store = SignalStore::new();
+        let step = store.insert(SignalKind::Step {
+            sequence,
+            every: Duration::from_millis(500),
+            started_at: Timestamp::ZERO,
+        });
+        let spread = store.insert(SignalKind::Spread {
+            source: step,
+            amount_millideg: 360_000,
+        });
+        let context = SignalSampleContext::new(Timestamp::ZERO, 0, 0);
+        assert_eq!(
+            store.sample(spread, context, &sequences),
+            store.sample(step, Timestamp::ZERO, &sequences),
+        );
     }
 }

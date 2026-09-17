@@ -21,7 +21,7 @@
 //! Renderer (signal-agnostic)
 //! ```
 //!
-//! Only `SignalStore::sample(id, timestamp)` is ever called — never a
+//! Only `SignalStore::sample(id, timestamp, sequences)` is ever called — never a
 //! `match` on `SignalKind` — so adding a new signal kind (e.g. a future
 //! `Sine`) never touches this module (item 77 of the signal-binding task
 //! brief).
@@ -30,6 +30,7 @@ use std::collections::HashMap;
 
 use inception_core::{Attribute, FixtureId, LightingState, Timestamp};
 
+use crate::sequence::SequenceStore;
 use crate::signal::{SignalError, SignalId, SignalSampleContext, SignalStore};
 use crate::value::Value;
 
@@ -169,12 +170,13 @@ impl SignalBindingStore {
     pub fn sample(
         &self,
         signals: &SignalStore,
+        sequences: &SequenceStore,
         now: Timestamp,
         state: &mut LightingState,
     ) -> Result<(), SignalError> {
         for (&(fixture, attribute), &bound) in &self.active {
             let context = SignalSampleContext::new(now, bound.fixture_index, bound.fixture_count);
-            let value = signals.sample(bound.signal, context)?;
+            let value = signals.sample(bound.signal, context, sequences)?;
             if let Some(attribute_value) = to_attribute_value(attribute, value) {
                 state.set_fixture_attribute(fixture, attribute_value);
             }
@@ -238,7 +240,9 @@ mod tests {
 
         let mut store = SignalBindingStore::new();
         store.bind(fixture, Attribute::Intensity, id, 0, 1);
-        store.sample(&signals, Timestamp::ZERO, &mut state).unwrap();
+        store
+            .sample(&signals, &SequenceStore::new(), Timestamp::ZERO, &mut state)
+            .unwrap();
 
         assert_eq!(state.intensity(fixture), Intensity::new(32768));
     }
@@ -272,7 +276,9 @@ mod tests {
             Timestamp::from_secs(10),
             Timestamp::from_secs(3600),
         ] {
-            store.sample(&signals, at, &mut state).unwrap();
+            store
+                .sample(&signals, &SequenceStore::new(), at, &mut state)
+                .unwrap();
             assert_eq!(state.intensity(fixture), Intensity::new(20000));
         }
     }
@@ -312,7 +318,9 @@ mod tests {
         let mut store = SignalBindingStore::new();
         store.bind(fixture_a, Attribute::Intensity, ranged, 0, 2);
         store.bind(fixture_b, Attribute::Intensity, ranged, 1, 2);
-        store.sample(&signals, Timestamp::ZERO, &mut state).unwrap();
+        store
+            .sample(&signals, &SequenceStore::new(), Timestamp::ZERO, &mut state)
+            .unwrap();
 
         // fixture 0: offset 0deg -> saw phase 0.0 -> value 0.0 -> 0%.
         // fixture 1: offset 90deg -> saw phase 0.25 -> value 0.25 -> 25%.
