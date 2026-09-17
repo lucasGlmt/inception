@@ -251,6 +251,13 @@ pub struct RuntimeImage {
     /// Runtime fixture IDs may be reassigned by a relink, so hot reload uses
     /// these patch names outside the render hot path when migrating state.
     pub fixture_keys: Vec<String>,
+    /// Every `on { ... }` block's compiled pattern/handler pair, copied
+    /// straight through from `bytecode.event_bindings` untouched: a pad
+    /// pattern is already fully numeric at compile time, so — unlike
+    /// `rig_contract`/roles — there is no physical/patch resolution for
+    /// this crate to do. `inception-runtime`'s `EventRouter` is built
+    /// directly from this field.
+    pub event_bindings: Vec<lux_bytecode::EventBinding>,
 }
 
 impl RuntimeImage {
@@ -493,6 +500,7 @@ pub fn link(
                 .iter()
                 .map(|fixture| fixture.debug_name.clone())
                 .collect(),
+            event_bindings: program.event_bindings.clone(),
         })
     } else {
         Err(errors)

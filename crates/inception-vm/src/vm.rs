@@ -239,6 +239,84 @@ impl Vm {
         }
     }
 
+    /// Runs `handler` to completion on a fresh, isolated execution —
+    /// never the entry function's own frame/call stack/operand stack, and
+    /// safe to call even while the entry fiber is mid-`WaitingUntil`
+    /// (`self.state` is neither read nor written here). Shares
+    /// `self.module`/`signals`/`bindings`/`sequences` — the same state a
+    /// scene's own execution already reads and writes — plus the caller's
+    /// `LightingState`/`TransitionEngine`, so `SetAttribute`/
+    /// `TransitionAttribute`/`BindSignal` inside `handler` behave exactly
+    /// as they would in a scene. Used exclusively to invoke event-handler
+    /// functions (`lux_bytecode::BytecodeModule::event_bindings`) from
+    /// `inception-runtime`'s `EventRouter`, never the module's own `entry`.
+    ///
+    /// Implementation note: rather than threading a separate "fiber"
+    /// argument through every `exec_*` method (which the Rust borrow
+    /// checker won't allow calling as `self.exec_foo(&mut self.some_field,
+    /// ...)`), this temporarily swaps `self.stack`/`self.frame`/
+    /// `self.call_stack` out for a fresh, empty set, runs the ordinary
+    /// `execute_one` loop unchanged, then unconditionally swaps the
+    /// entry fiber's original state back before returning — success,
+    /// fault, or the handler-only `Wait` backstop below. `execute_one` and
+    /// every `exec_*` method it dispatches to are completely unaware this
+    /// happened; they just keep operating on "whichever executing state
+    /// currently lives in `self.stack`/`self.frame`/`self.call_stack`".
+    ///
+    /// A `Wait` instruction reached in `handler` is rejected as
+    /// [`VmErrorKind::WaitNotAllowedInHandler`] rather than actually
+    /// suspending: an ephemeral invocation like this one is dropped when
+    /// this call returns and has no way to be resumed later.
+    /// `lux-typeck` already rejects `wait` inside an `on { ... }` body at
+    /// compile time — this is defense in depth for hand-built bytecode,
+    /// not a path real compiled Lux ever reaches.
+    ///
+    /// A fault here is returned to the caller, never stored on `self`: it
+    /// doesn't touch `self.state` and can't corrupt the entry fiber — a
+    /// misbehaving handler must not be able to take down the rest of the
+    /// show.
+    pub fn run_event_handler<C: Clock>(
+        &mut self,
+        handler: FunctionId,
+        clock: &C,
+        lighting: &mut LightingState,
+        transitions: &mut TransitionEngine,
+    ) -> Result<(), VmError> {
+        let local_count = self
+            .function(handler)
+            .map(|f| f.locals.len())
+            .ok_or_else(|| VmError::new(handler, 0, VmErrorKind::InvalidFunction(handler)))?;
+
+        let saved_stack = std::mem::take(&mut self.stack);
+        let saved_frame = self.frame.take();
+        let saved_call_stack = std::mem::take(&mut self.call_stack);
+
+        self.frame = Some(Frame::new(handler, local_count));
+
+        let result = loop {
+            let function_id = self.frame_mut().function;
+            let pc = self.frame_mut().pc;
+            match self.execute_one(clock, lighting, transitions) {
+                Ok(Step::Continue) => continue,
+                Ok(Step::Finished) => break Ok(()),
+                Ok(Step::Wait(_)) => {
+                    break Err(VmError::new(
+                        function_id,
+                        pc,
+                        VmErrorKind::WaitNotAllowedInHandler,
+                    ));
+                }
+                Err(err) => break Err(err),
+            }
+        };
+
+        self.stack = saved_stack;
+        self.frame = saved_frame;
+        self.call_stack = saved_call_stack;
+
+        result
+    }
+
     fn function(&self, id: FunctionId) -> Option<&lux_bytecode::Function> {
         self.module
             .functions

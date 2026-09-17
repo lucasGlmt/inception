@@ -8,6 +8,7 @@
 
 pub mod attribute;
 pub mod disasm;
+pub mod event;
 pub mod ids;
 pub mod instruction;
 pub mod intrinsic;
@@ -21,6 +22,7 @@ mod tests;
 
 pub use attribute::Attribute;
 pub use disasm::disassemble;
+pub use event::{EventAction, EventBinding, EventPattern};
 pub use ids::{ConstantId, FunctionId, LocalId, TargetId};
 pub use instruction::Instruction;
 pub use intrinsic::IntrinsicId;

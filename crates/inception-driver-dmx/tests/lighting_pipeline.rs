@@ -183,6 +183,7 @@ fn malformed_hand_built_set_attribute_is_rejected_before_execution() {
         entry: Some(FunctionId(0)),
         target_count: 1,
         rig_contract: None,
+        event_bindings: Vec::new(),
     };
 
     assert!(lux_bytecode::verify(&module).is_err());

@@ -11,11 +11,12 @@
 use lux_syntax::Span;
 use lux_syntax::ast::{BinaryOp, Literal, UnaryOp};
 
-use crate::ids::{LocalId, RoleId, SceneId, TargetId};
+use crate::ids::{HandlerId, LocalId, RoleId, SceneId, TargetId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirFile {
     pub scenes: Vec<HirScene>,
+    pub handlers: Vec<HirEventHandler>,
     pub rig_contract: Option<HirRigContract>,
     pub target_count: u32,
 }
@@ -92,6 +93,39 @@ impl HirScene {
     pub fn local(&self, id: LocalId) -> &LocalDecl {
         &self.locals[id.0 as usize]
     }
+}
+
+/// A resolved `on { ... }` block. Structurally identical to [`HirScene`]
+/// (locals + statements) — it's a second kind of executable body, just
+/// never `entry` and never invoked from Lux source itself, only by the
+/// runtime's `EventRouter` (see `lux-mir`/`lux-bytecode` for how it
+/// becomes its own function).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirEventHandler {
+    pub id: HandlerId,
+    pub pattern: HirEventPattern,
+    pub pattern_span: Span,
+    /// Every local declared in this handler's body, in declaration order.
+    pub locals: Vec<LocalDecl>,
+    pub statements: Vec<HirStatement>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirInputAction {
+    Press,
+    Release,
+}
+
+/// V1 supports exactly one event-pattern shape — see `AGENTS.md`/RFC 0007
+/// on why this stays closed rather than a general event-expression tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirEventPattern {
+    LaunchpadPad {
+        x: u8,
+        y: u8,
+        action: HirInputAction,
+    },
 }
 
 /// A `let` binding's declaration site. Keeps the original name only for

@@ -32,6 +32,7 @@ pub enum Item {
     Scene(SceneDecl),
     RigContract(RigContractDecl),
     Import(ImportDecl),
+    EventHandler(EventHandlerDecl),
 }
 
 /// `import std.Math;` — a module import. `path` holds every dotted
@@ -61,6 +62,33 @@ pub struct RoleDecl {
 pub struct SceneDecl {
     pub name: Identifier,
     pub body: Block,
+    pub span: Span,
+}
+
+/// `on <device>.<control>(<x>, <y>).<action> { ... }` — V1's only event
+/// pattern shape (see `AGENTS.md`/RFC 0007): `on launchpad.pad(1, 1).press`.
+/// Deliberately not a generic event-expression grammar — `device`,
+/// `control` and `action` are kept as raw identifiers, like
+/// `AssignStatement::attribute`; validating they're literally
+/// `launchpad`/`pad`/`press`|`release` is `lux-hir`'s job, not the
+/// parser's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventHandlerDecl {
+    pub device: Identifier,
+    pub control: Identifier,
+    pub x: EventCoordinate,
+    pub y: EventCoordinate,
+    pub action: Identifier,
+    pub body: Block,
+    pub span: Span,
+}
+
+/// A pad coordinate as written. `value` may be out of `1..=8` — checked by
+/// `lux-hir`, the same "range checks aren't enforced in the AST" split
+/// this module's own docs describe for e.g. `Literal::Intensity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventCoordinate {
+    pub value: i64,
     pub span: Span,
 }
 

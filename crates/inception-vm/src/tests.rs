@@ -25,6 +25,7 @@ fn module_with(constants: Vec<Constant>, functions: Vec<Function>) -> BytecodeMo
         entry: Some(FunctionId(0)),
         target_count: 0,
         rig_contract: None,
+        event_bindings: Vec::new(),
     }
 }
 
@@ -1698,4 +1699,173 @@ fn spread_on_effects_step_pushes_a_sampleable_signal_of_the_source_element_type(
             "fixture {fixture_index}"
         );
     }
+}
+
+// `Vm::run_event_handler` — running a non-entry function (as
+// `EventBinding::handler` would be) to completion without disturbing the
+// entry fiber's own execution.
+
+#[test]
+fn run_event_handler_runs_independently_of_a_waiting_entry_fiber() {
+    let module = module_with(
+        vec![Constant::Duration(1_000_000_000)],
+        vec![
+            function(
+                0,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::Wait,
+                    Instruction::Return,
+                ],
+                vec![],
+                1,
+            ),
+            function(1, vec![Instruction::Return], vec![], 0),
+        ],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+    let waiting_state = vm.state();
+    let entry_pc_before = vm.current_pc();
+
+    vm.run_event_handler(FunctionId(1), &clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    // The entry fiber's frame/pc/state are exactly as they were — the
+    // handler ran on its own isolated stack/frame/call stack, sharing
+    // only `signals`/`bindings`/`sequences`/`module` (see
+    // `Vm::run_event_handler`'s docs).
+    assert_eq!(vm.state(), waiting_state);
+    assert_eq!(vm.current_function(), Some(FunctionId(0)));
+    assert_eq!(vm.current_pc(), entry_pc_before);
+}
+
+#[test]
+fn run_event_handler_rejects_wait() {
+    let module = module_with(
+        vec![Constant::Duration(1_000_000_000)],
+        vec![
+            function(0, vec![Instruction::Return], vec![], 0),
+            function(
+                1,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::Wait,
+                    Instruction::Return,
+                ],
+                vec![],
+                1,
+            ),
+        ],
+    );
+    let mut vm = Vm::new(module).expect("module should verify");
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    let err = vm
+        .run_event_handler(FunctionId(1), &clock, &mut lighting, &mut transitions)
+        .unwrap_err();
+
+    assert_eq!(err.kind, VmErrorKind::WaitNotAllowedInHandler);
+    assert_eq!(err.function, FunctionId(1));
+}
+
+#[test]
+fn run_event_handler_fault_does_not_corrupt_entry_fiber() {
+    let module = module_with(
+        vec![Constant::Int(1), Constant::Int(0)],
+        vec![
+            function(
+                0,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::Pop,
+                    Instruction::Return,
+                ],
+                vec![],
+                1,
+            ),
+            function(
+                1,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::Const(ConstantId(1)),
+                    Instruction::Div,
+                    Instruction::Pop,
+                    Instruction::Return,
+                ],
+                vec![],
+                2,
+            ),
+        ],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let err = vm
+        .run_event_handler(FunctionId(1), &clock, &mut lighting, &mut transitions)
+        .unwrap_err();
+    assert_eq!(err.kind, VmErrorKind::DivisionByZero);
+
+    // The entry fiber had already finished before the handler faulted; a
+    // faulting handler must not retroactively change that, or leak its
+    // own (discarded) operand stack into the entry fiber's.
+    assert!(vm.is_finished());
+    assert!(vm.stack().is_empty());
+}
+
+#[test]
+fn run_event_handler_set_attribute_mutates_shared_lighting_state() {
+    let mut module = module_with(
+        vec![Constant::Intensity(32767)],
+        vec![
+            function(0, vec![Instruction::Return], vec![], 0),
+            function(
+                1,
+                vec![
+                    Instruction::Const(ConstantId(0)),
+                    Instruction::SetAttribute {
+                        target: lux_bytecode::TargetId(0),
+                        attribute: lux_bytecode::Attribute::Intensity,
+                    },
+                    Instruction::Return,
+                ],
+                vec![],
+                1,
+            ),
+        ],
+    );
+    module.target_count = 1;
+
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    lighting.define_target(
+        inception_core::TargetId(0),
+        inception_core::ResolvedTarget {
+            fixtures: vec![inception_core::FixtureId(0)],
+        },
+    );
+
+    vm.run_event_handler(FunctionId(1), &clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    assert_eq!(
+        lighting.intensity(inception_core::FixtureId(0)),
+        inception_core::Intensity::new(32767)
+    );
 }

@@ -1,6 +1,9 @@
 use std::convert::Infallible;
 
-use inception_core::{Clock, Duration, Timestamp, UniverseId, VirtualClock};
+use inception_core::{
+    Clock, DeviceId, Duration, InputAction, InputControl, InputEvent, Timestamp, UniverseId,
+    VirtualClock,
+};
 use inception_driver_dmx::{NullDmxOutput, RecordingDmxOutput};
 use inception_linker::{
     Capability, CapabilitySet, FixtureDefinition, FixtureLibrary, FixtureMappings, Patch,
@@ -948,4 +951,118 @@ fn spread_composes_with_a_preceding_phase() {
             "fixture {index}: expected ~{expected}, got {actual}"
         );
     }
+}
+
+// Event system: `on launchpad.pad(x, y).<action> { ... }`, driven end to
+// end with synthetic `InputEvent`s — no hardware, no driver, see RFC 0007.
+
+fn press_pad(x: u8, y: u8) -> InputEvent {
+    InputEvent {
+        device: DeviceId(1),
+        control: InputControl::Pad { x, y },
+        action: InputAction::Press,
+    }
+}
+
+fn two_handler_event_source() -> &'static str {
+    r#"
+    rig contract DemoRig {
+        role Washes: Group<Intensity>;
+    }
+    scene main {
+    }
+    on launchpad.pad(1, 1).press {
+        Washes.intensity = 100%;
+    }
+    on launchpad.pad(1, 2).press {
+        Washes.intensity = 50%;
+    }
+    "#
+}
+
+#[test]
+fn synthetic_press_event_triggers_only_its_own_handler() {
+    let fixtures = [("front".to_string(), UniverseId(1), 1)];
+    let image = linked_image_for(two_handler_event_source(), &fixtures);
+    let mut host = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 0);
+
+    let report = host.dispatch_input_event(press_pad(1, 1), Timestamp::from_millis(10));
+    assert_eq!(report.matched_handlers, 1);
+    assert!(report.faults.is_empty());
+
+    host.tick(Timestamp::from_millis(10)).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 255);
+}
+
+#[test]
+fn a_press_on_an_unbound_pad_matches_no_handler() {
+    let fixtures = [("front".to_string(), UniverseId(1), 1)];
+    let image = linked_image_for(two_handler_event_source(), &fixtures);
+    let mut host = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+
+    let report = host.dispatch_input_event(press_pad(3, 3), Timestamp::from_millis(10));
+
+    assert_eq!(report.matched_handlers, 0);
+    assert!(report.faults.is_empty());
+    host.tick(Timestamp::from_millis(10)).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 0);
+}
+
+#[test]
+fn event_handler_transition_progresses_over_virtual_time() {
+    let fixtures = [("front".to_string(), UniverseId(1), 1)];
+    let source = r#"
+        rig contract DemoRig {
+            role Washes: Group<Intensity>;
+        }
+        scene main {
+            Washes.intensity = 100%;
+        }
+        on launchpad.pad(1, 2).press {
+            Washes.intensity -> 0% over 500ms;
+        }
+    "#;
+    let image = linked_image_for(source, &fixtures);
+    let mut host = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 255);
+
+    let report = host.dispatch_input_event(press_pad(1, 2), Timestamp::ZERO);
+    assert_eq!(report.matched_handlers, 1);
+
+    // The handler itself already returned (no `wait`); the transition it
+    // started keeps progressing afterward via the ordinary tick loop,
+    // exactly like a scene's own `->` would (item 11 of the task brief).
+    host.tick(Timestamp::from_millis(250)).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 128);
+
+    host.tick(Timestamp::from_millis(500)).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 0);
+    assert_eq!(host.active_transition_count(), 0);
+}
+
+#[test]
+fn event_bindings_survive_a_discarded_invalid_candidate_build() {
+    let fixtures = [("front".to_string(), UniverseId(1), 1)];
+    let image = linked_image_for(two_handler_event_source(), &fixtures);
+    let mut host = RuntimeEngine::new(image, RecordingDmxOutput::new()).unwrap();
+    host.start(Timestamp::ZERO).unwrap();
+
+    let invalid = r#"
+        rig contract DemoRig { role Washes: Group<Intensity>; }
+        scene main { Washes.intensity = red; }
+    "#;
+    assert!(lux_compiler::compile_portable(invalid).is_err());
+    // Never call `host.reload(...)` — mirrors what `lux dev` does on a
+    // failed build (see `failed_compile_never_replaces_the_running_program`):
+    // the old `LoadedProgram`, and the `EventRouter` bundled inside it,
+    // stay fully live and untouched.
+
+    let report = host.dispatch_input_event(press_pad(1, 1), Timestamp::from_millis(10));
+    assert_eq!(report.matched_handlers, 1);
+    host.tick(Timestamp::from_millis(10)).unwrap();
+    assert_eq!(host.output().last_frame(UniverseId(1)).unwrap()[0], 255);
 }

@@ -18,6 +18,6 @@ mod tests;
 pub use environment::TargetEnvironment;
 pub use error::HirError;
 pub use hir::*;
-pub use ids::{LocalId, RoleId, SceneId, TargetId};
+pub use ids::{HandlerId, LocalId, RoleId, SceneId, TargetId};
 pub use resolve::{lower, lower_type_name, lower_with_modules};
 pub use user_modules::UserModuleEnvironment;

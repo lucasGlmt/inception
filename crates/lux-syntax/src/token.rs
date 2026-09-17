@@ -81,6 +81,7 @@ pub enum TokenKind {
     Role,
     Group,
     Import,
+    On,
 
     // Punctuation
     LBrace,
@@ -133,6 +134,7 @@ impl TokenKind {
             TokenKind::Role => "`role`".to_string(),
             TokenKind::Group => "`Group`".to_string(),
             TokenKind::Import => "`import`".to_string(),
+            TokenKind::On => "`on`".to_string(),
             TokenKind::LBrace => "`{`".to_string(),
             TokenKind::RBrace => "`}`".to_string(),
             TokenKind::LParen => "`(`".to_string(),
@@ -182,6 +184,7 @@ pub fn keyword(ident: &str) -> Option<TokenKind> {
         "role" => TokenKind::Role,
         "Group" => TokenKind::Group,
         "import" => TokenKind::Import,
+        "on" => TokenKind::On,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "red" => TokenKind::Red,

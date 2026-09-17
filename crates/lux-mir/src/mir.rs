@@ -32,6 +32,31 @@ pub struct MirModule {
     /// `lux_bytecode::BytecodeModule::target_count` by codegen.
     pub target_count: u32,
     pub rig_contract: Option<MirRigContract>,
+    /// One entry per `on { ... }` block, each pointing at its own
+    /// (never-`entry`, never directly called) handler function in
+    /// `functions`. See `lux-mir::lower`.
+    pub event_bindings: Vec<MirEventBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirEventAction {
+    Press,
+    Release,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirEventPattern {
+    LaunchpadPad {
+        x: u8,
+        y: u8,
+        action: MirEventAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirEventBinding {
+    pub pattern: MirEventPattern,
+    pub handler: FunctionId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

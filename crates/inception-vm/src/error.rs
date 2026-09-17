@@ -129,4 +129,12 @@ pub enum VmErrorKind {
     /// already a compile-time error), kept only for the same defensive
     /// reason every other `VmErrorKind` exists.
     EmptyStepSequence(crate::sequence::SequenceId),
+    /// A `Wait` instruction was reached while running an event handler via
+    /// [`crate::Vm::run_event_handler`]. Unreachable from a real compiled
+    /// handler — `lux-typeck` already rejects `wait` inside an `on { ... }`
+    /// body at compile time (the VM is single-fiber; only the entry
+    /// function's own execution may ever be suspended) — kept only for the
+    /// same defensive reason every other `VmErrorKind` exists, e.g. a
+    /// hand-built module in a test.
+    WaitNotAllowedInHandler,
 }

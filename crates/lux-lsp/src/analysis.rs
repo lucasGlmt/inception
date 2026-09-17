@@ -274,6 +274,18 @@ impl AnalysisSnapshot {
             return import_completions(&segments, prefix);
         }
 
+        if let Some(completion) = event_header_completion(&self.document.source, offset) {
+            let candidates: &[&str] = match completion {
+                EventHeaderCompletion::Control => &["pad"],
+                EventHeaderCompletion::Action => &["press", "release"],
+            };
+            return candidates
+                .iter()
+                .filter(|name| matches_prefix(name, prefix))
+                .map(|name| keyword_item(name, "0-event"))
+                .collect();
+        }
+
         if let Some(receiver) = receiver_expr_before(&self.document.source, offset) {
             if let Some(module) = self
                 .imported_std_modules()
@@ -346,7 +358,7 @@ impl AnalysisSnapshot {
             );
         }
         if is_top_level(&self.document.source, offset) {
-            for keyword in ["import", "scene", "rig"] {
+            for keyword in ["import", "scene", "rig", "on"] {
                 if matches_prefix(keyword, prefix) {
                     items.push(keyword_item(keyword, "4-keyword"));
                 }
@@ -784,6 +796,8 @@ impl AnalysisSnapshot {
             value = Some(format!("```lux\ntype {ty}\n```"));
         } else if self.scene_names().contains(&word.0) {
             value = Some(format!("```lux\nscene {}\n```", word.0));
+        } else if let Some(doc) = self.event_header_hover(Span::new(word.1, word.2)) {
+            value = Some(format!("```lux\n{}\n```\n\n{doc}", word.0));
         }
         value.map(|value| Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -1026,6 +1040,26 @@ impl AnalysisSnapshot {
                     selection_range: self.document.map.range(&self.document.source, import.span),
                     children: None,
                 }),
+                Item::EventHandler(handler) => symbols.push(DocumentSymbol {
+                    name: format!(
+                        "on {}.{}({}, {}).{}",
+                        handler.device.name,
+                        handler.control.name,
+                        handler.x.value,
+                        handler.y.value,
+                        handler.action.name
+                    ),
+                    detail: Some("event handler".into()),
+                    kind: SymbolKind::EVENT,
+                    tags: None,
+                    deprecated: None,
+                    range: self.document.map.range(&self.document.source, handler.span),
+                    selection_range: self
+                        .document
+                        .map
+                        .range(&self.document.source, handler.device.span),
+                    children: None,
+                }),
             }
         }
         symbols
@@ -1101,6 +1135,48 @@ impl AnalysisSnapshot {
                         push(segment.span, 5);
                     }
                 }
+                Item::EventHandler(handler) => {
+                    push(handler.device.span, 5);
+                    push(handler.control.span, 1);
+                    push(handler.action.span, 4);
+                    for statement in &handler.body.statements {
+                        if let Statement::Let(binding) = statement {
+                            push(binding.name.span, 0);
+                            if let Some(annotation) = &binding.type_annotation {
+                                push(annotation.span, 3);
+                            }
+                        }
+                        match statement {
+                            Statement::Assign(assign) => {
+                                push(assign.target.span, 0);
+                                push(assign.attribute.span, 4);
+                            }
+                            Statement::Transition(transition) => {
+                                push(transition.target.span, 0);
+                                push(transition.attribute.span, 4);
+                            }
+                            Statement::BindSignal(bind) => {
+                                push(bind.target.span, 0);
+                                push(bind.attribute.span, 4);
+                            }
+                            _ => {}
+                        }
+                        visit_statement_expressions(statement, &mut |expression| {
+                            if let Expression::Identifier(identifier) = expression {
+                                push(identifier.span, 0);
+                            }
+                            if let Expression::Call(call) = expression {
+                                if let Some(qualifier) = &call.callee.qualifier {
+                                    push(qualifier.span, 5);
+                                }
+                                push(call.callee.name.span, 1);
+                            }
+                            if let Expression::MethodCall(method_call) = expression {
+                                push(method_call.method.span, 1);
+                            }
+                        });
+                    }
+                }
             }
         }
         absolute.sort_by_key(|(position, _, _)| (position.line, position.character));
@@ -1127,6 +1203,28 @@ impl AnalysisSnapshot {
                 }
             })
             .collect()
+    }
+
+    /// Hover text for a `launchpad`/`pad`/`press`/`release` token inside
+    /// an `on { ... }` header — only when `span` exactly matches one of
+    /// that handler's own device/control/action spans, so an unrelated
+    /// identifier that happens to share a name (e.g. a local called
+    /// `pad`) is never shadowed.
+    fn event_header_hover(&self, span: Span) -> Option<&'static str> {
+        self.document.ast.items.iter().find_map(|item| {
+            let Item::EventHandler(handler) = item else {
+                return None;
+            };
+            if handler.device.span == span {
+                Some("Launchpad X input device")
+            } else if handler.control.span == span {
+                Some("Launchpad X pad, addressed as `pad(x, y)` — x, y: 1..=8")
+            } else if handler.action.span == span {
+                Some("Launchpad pad event — `press` or `release`")
+            } else {
+                None
+            }
+        })
     }
 
     fn scene_names(&self) -> Vec<&str> {
@@ -1419,6 +1517,48 @@ fn import_path_segments(source: &str, offset: usize) -> Option<Vec<String>> {
         }
     }
     Some(segments)
+}
+
+/// Which part of an `on launchpad.pad(x, y).press { ... }` header the
+/// cursor is completing — a purely textual scan of the current
+/// statement, mirroring `import_path_segments`'s style. Never a general
+/// event-expression parser: V1's `on` grammar is closed (device/control/
+/// action are fixed words, see `EventHandlerDecl`'s docs), so there are
+/// only two dotted positions worth completing at all.
+enum EventHeaderCompletion {
+    /// `on launchpad.$0` — only `pad` is valid.
+    Control,
+    /// `on launchpad.pad(<x>, <y>).$0` — only `press`/`release` are valid.
+    Action,
+}
+
+fn event_header_completion(source: &str, offset: usize) -> Option<EventHeaderCompletion> {
+    let prefix = identifier_prefix(source, offset);
+    let before = &source[..offset.min(source.len())];
+    let head = &before[..before.len() - prefix.len()];
+    event_header_before_dot(head.strip_suffix('.')?)
+}
+
+/// `head` must already end exactly where the completed segment ends (no
+/// trailing `.` or partial identifier) — same contract as
+/// `scan_receiver_expr`.
+fn event_header_before_dot(head: &str) -> Option<EventHeaderCompletion> {
+    let statement = head.rsplit(['{', '}', ';']).next().unwrap_or(head);
+    let rest = statement.trim_start().strip_prefix("on")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    if rest.trim_end() == "launchpad" {
+        return Some(EventHeaderCompletion::Control);
+    }
+    let rest = rest.strip_prefix("launchpad")?.strip_prefix('.')?;
+    let rest = rest.strip_prefix("pad")?.trim_start().strip_prefix('(')?;
+    let close = rest.find(')')?;
+    rest[close + 1..]
+        .trim()
+        .is_empty()
+        .then_some(EventHeaderCompletion::Action)
 }
 
 fn import_completions(segments: &[String], prefix: &str) -> Vec<CompletionItem> {
@@ -2640,5 +2780,115 @@ mod tests {
             panic!("expected markup")
         };
         assert!(contents.value.contains("length() -> Int"));
+    }
+
+    // Event handlers: `on launchpad.pad(x, y).press { ... }` — item 21 of
+    // the task brief.
+
+    #[test]
+    fn completion_after_on_launchpad_dot_offers_pad() {
+        let (analysis, position) = snapshot("on launchpad.$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["pad"]);
+    }
+
+    #[test]
+    fn completion_after_on_launchpad_pad_call_offers_press_and_release() {
+        let (analysis, position) = snapshot("on launchpad.pad(1, 1).$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["press", "release"]);
+    }
+
+    #[test]
+    fn completion_after_on_launchpad_pad_call_respects_a_typed_prefix() {
+        let (analysis, position) = snapshot("on launchpad.pad(1, 1).re$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["release"]);
+    }
+
+    #[test]
+    fn completion_at_top_level_offers_on() {
+        let (analysis, position) = snapshot("$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(labels.contains(&"on".to_string()));
+    }
+
+    #[test]
+    fn out_of_range_pad_coordinate_is_diagnosed_without_save() {
+        let (analysis, _) = snapshot(
+            "rig contract Demo { role Washes: Group<Intensity>; } on launchpad.pad(0, 1).press { Washes.intensity = 100%; } $0",
+        );
+        let diagnostics = analysis.diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("out of range 1..=8"))
+        );
+    }
+
+    #[test]
+    fn wait_inside_an_event_handler_is_diagnosed_without_save() {
+        let (analysis, _) = snapshot("on launchpad.pad(1, 1).press { wait 1s; } $0");
+        let diagnostics = analysis.diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("`wait` is not allowed"))
+        );
+    }
+
+    #[test]
+    fn hover_on_launchpad_device_word_reports_its_role() {
+        let source = "on launchpad.pad(1, 1).press { }";
+        let pos = source.find("launchpad").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("input device"));
+    }
+
+    #[test]
+    fn hover_on_pad_control_word_reports_the_coordinate_range() {
+        let source = "on launchpad.pad(1, 1).press { }";
+        let pos = source.find(".pad").unwrap() + 2;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("1..=8"));
+    }
+
+    #[test]
+    fn hover_on_press_action_word_reports_its_meaning() {
+        let source = "on launchpad.pad(1, 1).press { }";
+        let pos = source.rfind("press").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("press") || contents.value.contains("release"));
     }
 }

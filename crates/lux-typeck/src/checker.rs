@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use lux_hir::{
-    HirAssign, HirBindSignal, HirCall, HirCallee, HirExpr, HirFile, HirLet, HirScene, HirStatement,
-    HirTransition, HirWait, LocalId,
+    HirAssign, HirBindSignal, HirCall, HirCallee, HirEventHandler, HirExpr, HirFile, HirLet,
+    HirScene, HirStatement, HirTransition, HirWait, LocalDecl, LocalId,
 };
 use lux_stdlib::{IntrinsicId, OverloadError, Signature};
 use lux_syntax::Span;
@@ -60,6 +60,11 @@ pub fn check(hir: &HirFile) -> Result<TypedProgram, Vec<TypeError>> {
         .iter()
         .map(|scene| checker.check_scene(scene))
         .collect();
+    let handler_locals: Vec<HashMap<LocalId, Type>> = hir
+        .handlers
+        .iter()
+        .map(|handler| checker.check_event_handler(handler))
+        .collect();
 
     if !checker.errors.is_empty() {
         return Err(checker.errors);
@@ -74,19 +79,27 @@ pub fn check(hir: &HirFile) -> Result<TypedProgram, Vec<TypeError>> {
         .scenes
         .iter()
         .zip(scene_locals)
-        .map(|(scene, local_types)| {
-            let dense = (0..scene.locals.len() as u32)
-                .map(|i| {
-                    *local_types
-                        .get(&LocalId(i))
-                        .expect("internal invariant violated: every local should have a type when `check` reports no errors")
-                })
-                .collect();
-            TypedScene { local_types: dense }
-        })
+        .map(|(scene, local_types)| dense_typed_body(scene.locals.len(), &local_types))
+        .collect();
+    let handlers = hir
+        .handlers
+        .iter()
+        .zip(handler_locals)
+        .map(|(handler, local_types)| dense_typed_body(handler.locals.len(), &local_types))
         .collect();
 
-    Ok(TypedProgram { scenes })
+    Ok(TypedProgram { scenes, handlers })
+}
+
+fn dense_typed_body(local_count: usize, local_types: &HashMap<LocalId, Type>) -> TypedScene {
+    let dense = (0..local_count as u32)
+        .map(|i| {
+            *local_types
+                .get(&LocalId(i))
+                .expect("internal invariant violated: every local should have a type when `check` reports no errors")
+        })
+        .collect();
+    TypedScene { local_types: dense }
 }
 
 struct Checker {
@@ -96,21 +109,57 @@ struct Checker {
 
 impl Checker {
     fn check_scene(&mut self, scene: &HirScene) -> HashMap<LocalId, Type> {
+        self.check_body(&scene.locals, &scene.statements, false)
+    }
+
+    /// Type-checks an `on { ... }` handler's body exactly like a scene's,
+    /// with one extra rule: `wait` is rejected. `inception-vm` is
+    /// single-fiber today (see `AGENTS.md`'s "Concurrency V1" note and
+    /// RFC 0007) — only the entry scene's own execution may ever be
+    /// suspended, so a handler that tried to `wait` would have nothing
+    /// sound to suspend into. A `->` transition or `<-` signal binding
+    /// keeps running after the handler returns without needing this at
+    /// all (see `inception_core::TransitionEngine`/`SignalBindingStore`,
+    /// sampled every tick independent of VM state).
+    fn check_event_handler(&mut self, handler: &HirEventHandler) -> HashMap<LocalId, Type> {
+        self.check_body(&handler.locals, &handler.statements, true)
+    }
+
+    fn check_body(
+        &mut self,
+        locals: &[LocalDecl],
+        statements: &[HirStatement],
+        forbid_wait: bool,
+    ) -> HashMap<LocalId, Type> {
         let mut local_types: HashMap<LocalId, Type> = HashMap::new();
-        for stmt in &scene.statements {
-            self.check_statement(scene, &mut local_types, stmt);
+        for stmt in statements {
+            if forbid_wait && let HirStatement::Wait(wait_stmt) = stmt {
+                self.errors.push(
+                    TypeError::new(
+                        "`wait` is not allowed inside an event handler",
+                        wait_stmt.span,
+                    )
+                    .with_help(
+                        "event handlers run to completion synchronously in V1 (only the entry \
+                         scene may be suspended) — start a transition (`->`) or signal binding \
+                         (`<-`) instead, which keeps running after the handler returns",
+                    ),
+                );
+                continue;
+            }
+            self.check_statement(locals, &mut local_types, stmt);
         }
         local_types
     }
 
     fn check_statement(
         &mut self,
-        scene: &HirScene,
+        locals: &[LocalDecl],
         local_types: &mut HashMap<LocalId, Type>,
         stmt: &HirStatement,
     ) {
         match stmt {
-            HirStatement::Let(let_stmt) => self.check_let(scene, local_types, let_stmt),
+            HirStatement::Let(let_stmt) => self.check_let(locals, local_types, let_stmt),
             HirStatement::Wait(wait_stmt) => self.check_wait(local_types, wait_stmt),
             HirStatement::Expression(expr_stmt) => {
                 self.infer(local_types, &expr_stmt.value);
@@ -252,12 +301,12 @@ impl Checker {
 
     fn check_let(
         &mut self,
-        scene: &HirScene,
+        locals: &[LocalDecl],
         local_types: &mut HashMap<LocalId, Type>,
         let_stmt: &HirLet,
     ) {
         let inferred = self.infer(local_types, &let_stmt.value);
-        let local = scene.local(let_stmt.local);
+        let local = &locals[let_stmt.local.0 as usize];
 
         let final_type = match &local.type_annotation {
             None => inferred,

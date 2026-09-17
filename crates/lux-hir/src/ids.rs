@@ -21,3 +21,9 @@ pub struct TargetId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RoleId(pub u32);
+
+/// An `on { ... }` event handler, file-scoped like [`SceneId`] but in its
+/// own namespace — a handler is never a callee, only ever invoked by the
+/// runtime's `EventRouter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HandlerId(pub u32);

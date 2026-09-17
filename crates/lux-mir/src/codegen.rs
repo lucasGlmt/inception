@@ -66,6 +66,37 @@ pub fn lower_to_bytecode(module: &MirModule) -> BytecodeModule {
                     .collect(),
             }
         }),
+        event_bindings: module
+            .event_bindings
+            .iter()
+            .map(to_bytecode_event_binding)
+            .collect(),
+    }
+}
+
+fn to_bytecode_event_binding(binding: &crate::mir::MirEventBinding) -> lux_bytecode::EventBinding {
+    lux_bytecode::EventBinding {
+        pattern: to_bytecode_event_pattern(binding.pattern),
+        handler: to_bytecode_function_id(binding.handler),
+    }
+}
+
+fn to_bytecode_event_pattern(pattern: crate::mir::MirEventPattern) -> lux_bytecode::EventPattern {
+    match pattern {
+        crate::mir::MirEventPattern::LaunchpadPad { x, y, action } => {
+            lux_bytecode::EventPattern::LaunchpadPad {
+                x,
+                y,
+                action: to_bytecode_event_action(action),
+            }
+        }
+    }
+}
+
+fn to_bytecode_event_action(action: crate::mir::MirEventAction) -> lux_bytecode::EventAction {
+    match action {
+        crate::mir::MirEventAction::Press => lux_bytecode::EventAction::Press,
+        crate::mir::MirEventAction::Release => lux_bytecode::EventAction::Release,
     }
 }
 

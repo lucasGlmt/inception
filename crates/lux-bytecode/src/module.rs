@@ -2,6 +2,7 @@
 //! produces and a verifier/VM consumes.
 
 use crate::PortableRigContract;
+use crate::event::EventBinding;
 use crate::ids::FunctionId;
 use crate::instruction::Instruction;
 use crate::value::{Constant, ValueType};
@@ -34,6 +35,11 @@ pub struct BytecodeModule {
     /// Portable semantic role requirements. Names are link-time/debug
     /// metadata and are never consulted by the VM.
     pub rig_contract: Option<PortableRigContract>,
+    /// Every `on { ... }` block, pre-resolved to a pattern/handler pair.
+    /// `inception-runtime`'s `EventRouter` matches incoming
+    /// `inception_core::InputEvent`s against this table directly — never
+    /// by re-walking the AST/HIR.
+    pub event_bindings: Vec<EventBinding>,
 }
 
 /// A single function's compiled code.

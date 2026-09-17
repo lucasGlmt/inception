@@ -11,6 +11,7 @@ path = "src/main.rs"
 ctrlc = "3"
 inception-core.workspace = true
 inception-driver-dmx.workspace = true
+inception-driver-launchpad.workspace = true
 inception-renderer.workspace = true
 inception-runtime.workspace = true
 lux-project.workspace = true

@@ -1,0 +1,10 @@
+scene main {
+}
+
+on launchpad.pad(1, 1).press {
+    Washes.intensity -> 100% over 200ms;
+}
+
+on launchpad.pad(1, 1).release {
+    Washes.intensity -> 10% over 300ms;
+}

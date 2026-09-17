@@ -9,6 +9,7 @@ inception-driver-dmx.workspace = true
 inception-linker.workspace = true
 inception-renderer.workspace = true
 inception-vm.workspace = true
+lux-bytecode.workspace = true
 
 [dev-dependencies]
 lux-compiler.workspace = true

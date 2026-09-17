@@ -274,4 +274,75 @@ mod tests {
                 .contains(lux_bytecode::Capability::Color)
         );
     }
+
+    #[test]
+    fn a_program_with_event_handlers_compiles_with_a_non_empty_event_table() {
+        let module = compile_portable(
+            r#"
+            rig contract DemoRig {
+                role Front: Group<Intensity>;
+            }
+            scene main {
+            }
+            on launchpad.pad(1, 1).press {
+                Front.intensity -> 100% over 200ms;
+            }
+            on launchpad.pad(1, 1).release {
+                Front.intensity -> 10% over 300ms;
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(module.event_bindings.len(), 2);
+        // Handler `FunctionId`s continue right after every scene (one
+        // scene, `main`, here) — see `lux-mir::lower`'s docs.
+        assert_eq!(
+            module.event_bindings[0].pattern,
+            lux_bytecode::EventPattern::LaunchpadPad {
+                x: 1,
+                y: 1,
+                action: lux_bytecode::EventAction::Press,
+            }
+        );
+        assert_eq!(
+            module.event_bindings[0].handler,
+            lux_bytecode::FunctionId(1)
+        );
+        assert_eq!(
+            module.event_bindings[1].pattern,
+            lux_bytecode::EventPattern::LaunchpadPad {
+                x: 1,
+                y: 1,
+                action: lux_bytecode::EventAction::Release,
+            }
+        );
+        assert_eq!(
+            module.event_bindings[1].handler,
+            lux_bytecode::FunctionId(2)
+        );
+    }
+
+    #[test]
+    fn out_of_range_pad_coordinate_is_a_resolve_diagnostic() {
+        let source = "on launchpad.pad(9, 1).press { }";
+        let diagnostics = compile(source, &no_targets()).expect_err("should fail resolution");
+        assert!(diagnostics.iter().all(|d| d.stage == Stage::Resolve));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("out of range 1..=8"))
+        );
+    }
+
+    #[test]
+    fn wait_inside_an_event_handler_is_a_type_diagnostic() {
+        let source = "on launchpad.pad(1, 1).press { wait 1s; }";
+        let diagnostics = compile(source, &no_targets()).expect_err("should fail type checking");
+        assert!(diagnostics.iter().all(|d| d.stage == Stage::Type));
+        assert!(diagnostics.iter().any(|d| {
+            d.message
+                .contains("`wait` is not allowed inside an event handler")
+        }));
+    }
 }

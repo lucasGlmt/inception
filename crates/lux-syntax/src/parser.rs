@@ -207,11 +207,13 @@ impl Parser {
             Some(Item::RigContract(self.parse_rig_contract_decl()))
         } else if self.check(TokenKind::Import) {
             Some(Item::Import(self.parse_import_decl()))
+        } else if self.check(TokenKind::On) {
+            Some(Item::EventHandler(self.parse_event_handler_decl()))
         } else {
             let tok = self.peek().clone();
             self.error(
                 format!(
-                    "expected `scene`, `rig` or `import`, found {}",
+                    "expected `scene`, `rig`, `import` or `on`, found {}",
                     tok.kind.describe()
                 ),
                 tok.span,
@@ -308,6 +310,64 @@ impl Parser {
         let body = self.parse_block();
         let span = Span::new(scene_tok.span.start, body.span.end);
         SceneDecl { name, body, span }
+    }
+
+    /// `on` IDENT `.` IDENT `(` coord `,` coord `)` `.` IDENT block — e.g.
+    /// `on launchpad.pad(1, 1).press { ... }`. Fixed shape, not a generic
+    /// event-expression grammar (see `EventHandlerDecl`'s docs):
+    /// `device`/`control`/`action` are recorded as raw identifiers and
+    /// validated by `lux-hir`, not here.
+    fn parse_event_handler_decl(&mut self) -> EventHandlerDecl {
+        let on_tok = self.advance(); // `on`
+        let device = self.expect_identifier("expected a device name (e.g. `launchpad`) after `on`");
+        self.expect(TokenKind::Dot, "expected `.` after the device name");
+        let control =
+            self.expect_identifier("expected a control name (e.g. `pad`) after the device name");
+        self.expect(TokenKind::LParen, "expected `(` after the control name");
+        let x = self.parse_event_coordinate();
+        self.expect(TokenKind::Comma, "expected `,` between pad coordinates");
+        let y = self.parse_event_coordinate();
+        self.expect(TokenKind::RParen, "expected `)` after pad coordinates");
+        self.expect(
+            TokenKind::Dot,
+            "expected `.` before the event action (`press`/`release`)",
+        );
+        let action = self.expect_identifier("expected `press` or `release`");
+        let body = self.parse_block();
+        let span = Span::new(on_tok.span.start, body.span.end);
+        EventHandlerDecl {
+            device,
+            control,
+            x,
+            y,
+            action,
+            body,
+            span,
+        }
+    }
+
+    fn parse_event_coordinate(&mut self) -> EventCoordinate {
+        if let TokenKind::Int(value) = self.peek_kind() {
+            let value = *value;
+            let tok = self.advance();
+            EventCoordinate {
+                value,
+                span: tok.span,
+            }
+        } else {
+            let tok = self.peek().clone();
+            self.error(
+                format!(
+                    "expected an integer pad coordinate, found {}",
+                    tok.kind.describe()
+                ),
+                tok.span,
+            );
+            EventCoordinate {
+                value: 1,
+                span: Span::at(tok.span.start),
+            }
+        }
     }
 
     fn parse_block(&mut self) -> Block {

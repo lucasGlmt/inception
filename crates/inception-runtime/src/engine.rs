@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use inception_core::{
-    AttributeValue, Clock, LightingState, Timestamp, TransitionEngine, UniverseId,
+    AttributeValue, Clock, InputEvent, LightingState, Timestamp, TransitionEngine, UniverseId,
 };
 use inception_driver_dmx::DmxOutput;
 use inception_linker::RuntimeImage;
 use inception_renderer::{ResolvedFixture, ResolvedRig, UniverseFrame};
-use inception_vm::{Vm, VmInitError};
+use inception_vm::{Vm, VmError, VmInitError};
 
-use crate::{OutputOperation, RuntimeError};
+use crate::{EventRouter, OutputOperation, RuntimeError};
 
 #[derive(Debug, Clone, Copy)]
 struct TickClock(Timestamp);
@@ -27,18 +27,55 @@ pub struct LoadedProgram {
     transitions: TransitionEngine,
     rig: ResolvedRig,
     fixture_keys: Vec<String>,
+    event_router: EventRouter,
 }
 
 impl LoadedProgram {
     pub fn new(image: RuntimeImage) -> Result<Self, VmInitError> {
         let lighting = image.lighting_state();
+        let event_router = EventRouter::new(image.event_bindings);
         Ok(Self {
             vm: Vm::new(image.bytecode)?,
             lighting,
             transitions: TransitionEngine::new(),
             rig: image.rig,
             fixture_keys: image.fixture_keys,
+            event_router,
         })
+    }
+
+    /// Routes `event` and runs every matched handler to completion, each
+    /// on its own ephemeral fiber (`Vm::run_event_handler`), against this
+    /// program's own `lighting`/`transitions` — a `->` transition or `<-`
+    /// binding a handler starts keeps progressing afterward via the
+    /// ordinary `advance`/`sample` tick loop below, exactly like a
+    /// scene's own (see `Vm::run_event_handler`'s docs). A handler that
+    /// faults is reported in the returned report, never propagated: one
+    /// bad button press must not affect the other matched handlers, the
+    /// entry fiber, or the rest of the show.
+    pub fn dispatch_input_event(
+        &mut self,
+        event: InputEvent,
+        now: Timestamp,
+    ) -> EventDispatchReport {
+        let clock = TickClock(now);
+        let handlers = self.event_router.route(event);
+        let matched_handlers = handlers.len();
+        let mut faults = Vec::new();
+        for handler in handlers {
+            if let Err(error) = self.vm.run_event_handler(
+                handler,
+                &clock,
+                &mut self.lighting,
+                &mut self.transitions,
+            ) {
+                faults.push(error);
+            }
+        }
+        EventDispatchReport {
+            matched_handlers,
+            faults,
+        }
     }
 
     fn start(&mut self) -> Result<(), inception_vm::VmError> {
@@ -139,6 +176,17 @@ pub struct ReloadReport {
     pub preserved_fixtures: usize,
 }
 
+/// The result of one `LoadedProgram::dispatch_input_event`/
+/// `RuntimeHost::dispatch_input_event` call.
+#[derive(Debug, Clone, Default)]
+pub struct EventDispatchReport {
+    pub matched_handlers: usize,
+    /// One entry per handler that faulted while running — never fatal to
+    /// the rest of the show, see `LoadedProgram::dispatch_input_event`'s
+    /// docs.
+    pub faults: Vec<VmError>,
+}
+
 /// Long-lived owner of the output connection and counters. Only its
 /// `LoadedProgram` is replaced by a hot reload.
 #[derive(Debug)]
@@ -182,6 +230,15 @@ impl<O: DmxOutput> RuntimeHost<O> {
             RuntimeError::DmxOutput { source, .. } => match source {},
         })?;
         self.render_and_send()
+    }
+
+    /// See `LoadedProgram::dispatch_input_event`'s docs.
+    pub fn dispatch_input_event(
+        &mut self,
+        event: InputEvent,
+        now: Timestamp,
+    ) -> EventDispatchReport {
+        self.program.dispatch_input_event(event, now)
     }
 
     /// Candidate construction and validation occur before this short swap.

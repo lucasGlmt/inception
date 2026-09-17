@@ -34,11 +34,12 @@ use lux_syntax::ast::{self, CallExpr, Expression, Item, SourceFile, Statement};
 use crate::environment::TargetEnvironment;
 use crate::error::HirError;
 use crate::hir::{
-    Capability, CapabilitySet, HirAssign, HirBindSignal, HirCall, HirCallee, HirExpr,
-    HirExprStatement, HirFile, HirLet, HirRigContract, HirRole, HirScene, HirStatement,
-    HirTransition, HirWait, LocalDecl, RoleCardinality, TypeAnnotation,
+    Capability, CapabilitySet, HirAssign, HirBindSignal, HirCall, HirCallee, HirEventHandler,
+    HirEventPattern, HirExpr, HirExprStatement, HirFile, HirInputAction, HirLet, HirRigContract,
+    HirRole, HirScene, HirStatement, HirTransition, HirWait, LocalDecl, RoleCardinality,
+    TypeAnnotation,
 };
-use crate::ids::{LocalId, RoleId, SceneId};
+use crate::ids::{HandlerId, LocalId, RoleId, SceneId};
 use crate::user_modules::UserModuleEnvironment;
 
 /// Lowers a parsed source file into HIR, resolving every name reference —
@@ -97,9 +98,18 @@ pub fn lower_with_modules(
         scenes.push(lowering.lower_scene(SceneId(scenes.len() as u32), decl));
     }
 
+    let mut handlers = Vec::new();
+    for item in &ast.items {
+        let Item::EventHandler(decl) = item else {
+            continue;
+        };
+        handlers.push(lowering.lower_event_handler(HandlerId(handlers.len() as u32), decl));
+    }
+
     if lowering.errors.is_empty() {
         Ok(HirFile {
             scenes,
+            handlers,
             rig_contract,
             target_count: resolved_targets.len() as u32,
         })
@@ -118,7 +128,7 @@ fn lower_rig_contract(
         .iter()
         .filter_map(|item| match item {
             Item::RigContract(contract) => Some(contract),
-            Item::Scene(_) | Item::Import(_) => None,
+            Item::Scene(_) | Item::Import(_) | Item::EventHandler(_) => None,
         })
         .collect();
     if contracts.len() > 1 {
@@ -364,6 +374,101 @@ impl Lowering<'_> {
             locals,
             statements,
             span: decl.span,
+        }
+    }
+
+    /// Lowers an `on <device>.<control>(<x>, <y>).<action> { ... }` block.
+    /// Body lowering (locals/statements) is identical to [`Self::lower_scene`];
+    /// the only new work is validating the event pattern itself — V1's
+    /// entire event vocabulary is `launchpad`/`pad`/`press`/`release` plus
+    /// `1..=8` coordinates, so it's checked directly here rather than
+    /// through a generic mechanism (see [`HirEventPattern`]'s docs).
+    fn lower_event_handler(
+        &mut self,
+        id: HandlerId,
+        decl: &ast::EventHandlerDecl,
+    ) -> HirEventHandler {
+        if decl.device.name != "launchpad" {
+            self.errors.push(
+                HirError::new(
+                    format!("unknown input device `{}`", decl.device.name),
+                    decl.device.span,
+                )
+                .with_help("V1 only supports the `launchpad` device"),
+            );
+        }
+        if decl.control.name != "pad" {
+            self.errors.push(
+                HirError::new(
+                    format!("unknown launchpad control `{}`", decl.control.name),
+                    decl.control.span,
+                )
+                .with_help("V1 only supports `launchpad.pad(x, y)`"),
+            );
+        }
+        let x = self.validate_pad_coordinate(decl.x, 'x');
+        let y = self.validate_pad_coordinate(decl.y, 'y');
+        let action = match decl.action.name.as_str() {
+            "press" => Some(HirInputAction::Press),
+            "release" => Some(HirInputAction::Release),
+            other => {
+                self.errors.push(
+                    HirError::new(
+                        format!("unknown launchpad event `{other}`"),
+                        decl.action.span,
+                    )
+                    .with_help("expected `press` or `release`"),
+                );
+                None
+            }
+        };
+
+        let mut scope = Scope::default();
+        let mut locals = Vec::new();
+        let mut statements = Vec::new();
+        for stmt in &decl.body.statements {
+            if let Some(hir_stmt) = self.lower_statement(&mut scope, &mut locals, stmt) {
+                statements.push(hir_stmt);
+            }
+        }
+
+        HirEventHandler {
+            id,
+            pattern: HirEventPattern::LaunchpadPad {
+                x: x.unwrap_or(1),
+                y: y.unwrap_or(1),
+                action: action.unwrap_or(HirInputAction::Press),
+            },
+            pattern_span: decl.span,
+            locals,
+            statements,
+            span: decl.span,
+        }
+    }
+
+    /// Rejects a pad coordinate outside the Launchpad X's main `1..=8`
+    /// grid, with a compile-time diagnostic that carries the coordinate's
+    /// own span — never let an out-of-range coordinate reach MIR/bytecode
+    /// or the driver.
+    fn validate_pad_coordinate(
+        &mut self,
+        coordinate: ast::EventCoordinate,
+        axis: char,
+    ) -> Option<u8> {
+        if (1..=8).contains(&coordinate.value) {
+            Some(coordinate.value as u8)
+        } else {
+            self.errors.push(
+                HirError::new(
+                    format!(
+                        "launchpad pad coordinate `{}` ({axis}) is out of range 1..=8",
+                        coordinate.value
+                    ),
+                    coordinate.span,
+                )
+                .with_help("the Launchpad X's main grid is 8x8, indexed 1..=8"),
+            );
+            None
         }
     }
 

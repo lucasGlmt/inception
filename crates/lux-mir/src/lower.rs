@@ -12,13 +12,16 @@
 //! `lux_typeck::infer::expr_type`'s docs for why panicking here is
 //! considered acceptable per `AGENTS.md`, item 24 of the task brief.
 
-use lux_hir::{HirExpr, HirFile, HirScene, HirStatement};
+use lux_hir::{
+    HirEventHandler, HirEventPattern, HirExpr, HirFile, HirInputAction, HirScene, HirStatement,
+};
 use lux_syntax::ast::{BinaryOp, UnaryOp};
 use lux_typeck::{Type, TypedProgram};
 
 use crate::ids::{BlockId, FunctionId};
 use crate::mir::{
-    BasicBlock, MirConstant, MirFunction, MirInstruction, MirLocal, MirModule, Terminator,
+    BasicBlock, MirConstant, MirEventAction, MirEventBinding, MirEventPattern, MirFunction,
+    MirInstruction, MirLocal, MirModule, Terminator,
 };
 use crate::values::lower_literal;
 
@@ -34,7 +37,7 @@ const ENTRY_SCENE_NAME: &str = "main";
 /// through to `MirModule::target_count` and, from there, to
 /// `lux_bytecode::BytecodeModule::target_count`.
 pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
-    let mut functions = Vec::with_capacity(hir.scenes.len());
+    let mut functions = Vec::with_capacity(hir.scenes.len() + hir.handlers.len());
     let mut entry = None;
 
     for (index, scene) in hir.scenes.iter().enumerate() {
@@ -45,10 +48,31 @@ pub fn lower(hir: &HirFile, typed: &TypedProgram) -> MirModule {
         functions.push(lower_scene(id, scene, &typed.scenes[index].local_types));
     }
 
+    // Handlers continue the same `FunctionId` numbering right after every
+    // scene — reusing the exact mechanism that already lets a non-`main`
+    // scene be an ordinary, non-entry function in this same table. A
+    // handler is never `entry` and never directly `Call`ed from other Lux
+    // code; only `event_bindings` ever points at one.
+    let handler_base = hir.scenes.len() as u32;
+    let mut event_bindings = Vec::with_capacity(hir.handlers.len());
+    for (index, handler) in hir.handlers.iter().enumerate() {
+        let id = FunctionId(handler_base + index as u32);
+        functions.push(lower_event_handler(
+            id,
+            handler,
+            &typed.handlers[index].local_types,
+        ));
+        event_bindings.push(MirEventBinding {
+            pattern: to_mir_event_pattern(handler.pattern),
+            handler: id,
+        });
+    }
+
     MirModule {
         functions,
         entry,
         target_count: hir.target_count,
+        event_bindings,
         rig_contract: hir
             .rig_contract
             .as_ref()
@@ -97,6 +121,59 @@ fn lower_scene(id: FunctionId, scene: &HirScene, local_types: &[Type]) -> MirFun
         name: scene.name.clone(),
         locals,
         blocks: vec![block],
+    }
+}
+
+/// Identical shape to [`lower_scene`]: locals + statements + one
+/// [`BasicBlock`] ending in [`Terminator::Return`]. `lux_typeck::check`
+/// already rejects `HirStatement::Wait` inside a handler body before this
+/// ever runs (see `checker::check_event_handler`), so `lower_statement`
+/// never actually encounters one here — no special case needed.
+fn lower_event_handler(
+    id: FunctionId,
+    handler: &HirEventHandler,
+    local_types: &[Type],
+) -> MirFunction {
+    let locals = handler
+        .locals
+        .iter()
+        .zip(local_types)
+        .map(|(decl, &ty)| MirLocal {
+            id: decl.id,
+            name: decl.name.clone(),
+            ty,
+        })
+        .collect();
+
+    let mut instructions = Vec::new();
+    for stmt in &handler.statements {
+        lower_statement(stmt, local_types, &mut instructions);
+    }
+
+    let block = BasicBlock {
+        id: BlockId(0),
+        instructions,
+        terminator: Terminator::Return,
+    };
+
+    MirFunction {
+        id,
+        name: format!("on#{}", id.0),
+        locals,
+        blocks: vec![block],
+    }
+}
+
+fn to_mir_event_pattern(pattern: HirEventPattern) -> MirEventPattern {
+    match pattern {
+        HirEventPattern::LaunchpadPad { x, y, action } => MirEventPattern::LaunchpadPad {
+            x,
+            y,
+            action: match action {
+                HirInputAction::Press => MirEventAction::Press,
+                HirInputAction::Release => MirEventAction::Release,
+            },
+        },
     }
 }
 

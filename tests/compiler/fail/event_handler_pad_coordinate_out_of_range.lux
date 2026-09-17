@@ -1,0 +1,2 @@
+on launchpad.pad(9, 1).press {
+}

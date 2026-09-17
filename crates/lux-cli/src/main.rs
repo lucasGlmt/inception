@@ -10,11 +10,12 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use inception_core::{Clock, MonotonicClock, UniverseId};
+use inception_core::{Clock, InputEvent, MonotonicClock, UniverseId};
 use inception_driver_dmx::{
     DmxOutput, EnttecDmxUsbProConfig, NullDmxOutput, OpenDmxConfig, RealDmxOutput,
     RealOpenDmxOutput, RecordingDmxOutput, TransportError,
 };
+use inception_driver_launchpad::LaunchpadListener;
 use inception_renderer::UniverseFrame;
 use inception_runtime::{LoadedProgram, RuntimeConfig, RuntimeHost, RuntimeLoop, StdSleeper};
 use lux_cli::ProjectWatcher;
@@ -60,7 +61,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "Lux\n\nUSAGE:\n    lux build\n    lux check [--watch]\n    lux dev [--output null|recording|dmx|open-dmx]\n    lux new <path>"
+    "Lux\n\nUSAGE:\n    lux build\n    lux check [--watch]\n    lux dev [--output null|recording|dmx|open-dmx]\n    lux new <path>\n\nIf the program contains `on launchpad...` handlers, `lux dev` auto-connects a\nLaunchpad X on startup and keeps it connected across hot reloads."
 }
 
 fn current_manifest() -> Result<PathBuf, Box<dyn Error>> {
@@ -125,6 +126,7 @@ fn dev_command(output_override: Option<String>) -> Result<(), Box<dyn Error>> {
         .unwrap_or(&built.project.manifest.output.driver)
         .to_string();
     let output = open_output(&built, &output_name)?;
+    let uses_launchpad = !built.image.event_bindings.is_empty();
     let program = LoadedProgram::new(built.image)
         .map_err(|error| format!("runtime candidate validation failed: {error:?}"))?;
     let mut host = RuntimeHost::from_program(program, output);
@@ -134,6 +136,29 @@ fn dev_command(output_override: Option<String>) -> Result<(), Box<dyn Error>> {
         StdSleeper,
     );
     runtime_loop.start(&mut host)?;
+
+    // Opened once, only if the program actually has Launchpad handlers,
+    // and never reopened on a later rebuild/reload (item 19/20 of the
+    // task brief) — `_launchpad_listener` is held for the rest of this
+    // function's lifetime and only ever dropped (closing the connection)
+    // when `dev_command` itself returns. A missing/failed device is
+    // non-fatal: the show still runs, its event handlers just never fire.
+    let (input_sender, input_receiver) = mpsc::channel::<InputEvent>();
+    let _launchpad_listener = if uses_launchpad {
+        match LaunchpadListener::open(input_sender) {
+            Ok(listener) => {
+                println!("✓ Launchpad X connected");
+                Some(listener)
+            }
+            Err(error) => {
+                eprintln!("✗ Launchpad X not available: {error}");
+                eprintln!("  event handlers will never fire this session");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     println!("Lux Dev\n");
     println!("Project: {}", built.project.manifest.project.name);
@@ -173,6 +198,12 @@ fn dev_command(output_override: Option<String>) -> Result<(), Box<dyn Error>> {
                 'r' => queue_build(&request_sender, &mut building),
                 'q' => running.store(false, Ordering::Relaxed),
                 _ => {}
+            }
+        }
+        while let Ok(event) = input_receiver.try_recv() {
+            let report = host.dispatch_input_event(event, runtime_loop.clock().now());
+            for fault in report.faults {
+                eprintln!("✗ event handler faulted: {fault:?}");
             }
         }
         match result_receiver.try_recv() {

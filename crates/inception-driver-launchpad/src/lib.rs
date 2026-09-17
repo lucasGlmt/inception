@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Launchpad X input driver: MIDI raw -> semantic
+//! `inception_core::InputEvent`. Everything above this crate — the
+//! runtime, `EventRouter`, Lux source itself — never sees a note number,
+//! velocity, MIDI channel or SysEx; see this crate's `listener` module
+//! doc, `AGENTS.md`'s "do not leak protocol-specific types into
+//! `inception-core`" driver rule, and `docs/rfcs/0007-event-system.md`.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod error;
+pub mod listener;
+pub mod mapping;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::LaunchpadError;
+pub use listener::{LAUNCHPAD_DEVICE_ID, LaunchpadListener};
+pub use mapping::{note_to_pad, pad_to_note};

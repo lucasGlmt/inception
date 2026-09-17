@@ -7,11 +7,13 @@
 mod config;
 mod engine;
 mod error;
+mod event_router;
 mod runtime_loop;
 mod scheduler;
 
 pub use config::{RuntimeConfig, RuntimeConfigError};
-pub use engine::{LoadedProgram, ReloadReport, RuntimeEngine, RuntimeHost};
+pub use engine::{EventDispatchReport, LoadedProgram, ReloadReport, RuntimeEngine, RuntimeHost};
 pub use error::{OutputOperation, RuntimeError, RuntimeLoopError};
+pub use event_router::EventRouter;
 pub use runtime_loop::{RuntimeLoop, Sleeper, StdSleeper};
 pub use scheduler::{FrameDeadline, FrameScheduler, RuntimeTimingStats};

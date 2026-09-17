@@ -1,0 +1,3 @@
+on launchpad.pad(1, 1).press {
+    wait 1s;
+}
