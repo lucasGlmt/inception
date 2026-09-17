@@ -13,6 +13,7 @@ pub mod binding;
 pub mod error;
 pub mod frame;
 pub mod intrinsic;
+pub mod sequence;
 pub mod signal;
 pub mod state;
 pub mod value;
@@ -23,6 +24,7 @@ mod tests;
 
 pub use binding::{ActiveSignalBinding, SignalBindingStore};
 pub use error::{VmError, VmErrorKind, VmInitError};
+pub use sequence::{SequenceError, SequenceId, SequenceStore};
 pub use signal::{SignalError, SignalId, SignalKind, SignalSampleContext, SignalStore};
 pub use state::VmState;
 pub use value::Value;

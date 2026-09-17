@@ -24,6 +24,15 @@ pub enum Type {
     /// `Box<Type>` specifically so `Type` itself can stay `Copy` — see
     /// [`SignalElement`]'s docs.
     Signal(SignalElement),
+    /// `Sequence<T>` for one of the 5 element types `SequenceElement`
+    /// allows — an immutable, ordered collection (see
+    /// `docs/rfcs` and `crate::checker::Checker::check_call`'s
+    /// `std.Sequence.of` handling). Same non-recursive-payload trick as
+    /// `Signal(SignalElement)`, for the same reason: it keeps `Type`
+    /// itself `Copy` and makes `Sequence<Sequence<T>>` structurally
+    /// unrepresentable, which is correct — nesting sequences is out of
+    /// scope for this milestone.
+    Sequence(SequenceElement),
 }
 
 impl Type {
@@ -57,6 +66,7 @@ impl Type {
             Type::Frequency => "Frequency",
             Type::Tempo => "Tempo",
             Type::Signal(_) => "Signal",
+            Type::Sequence(_) => "Sequence",
         }
     }
 
@@ -75,6 +85,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Signal(elem) => write!(f, "Signal<{elem}>"),
+            Type::Sequence(elem) => write!(f, "Sequence<{elem}>"),
             other => f.write_str(other.name()),
         }
     }
@@ -146,11 +157,71 @@ impl fmt::Display for SignalElement {
     }
 }
 
+/// The element types `Sequence<T>` may wrap in V1 — the same 5 types as
+/// [`SignalElement`] (see that type's docs for why this isn't just `Type`
+/// recursively): `Sequence.of` is currently the only way to construct a
+/// sequence, and it's built on the same `lux-stdlib` machinery
+/// `Signal.constant` is (see `crate::stdlib_bridge`). Kept as its own enum
+/// rather than reusing `SignalElement` directly so `Sequence<T>` and
+/// `Signal<T>` stay independently extensible — nothing here assumes their
+/// element universes must always match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceElement {
+    Int,
+    Float,
+    Angle,
+    Intensity,
+    Color,
+}
+
+impl SequenceElement {
+    pub const ALL: &'static [SequenceElement] = &[
+        SequenceElement::Int,
+        SequenceElement::Float,
+        SequenceElement::Angle,
+        SequenceElement::Intensity,
+        SequenceElement::Color,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SequenceElement::Int => "Int",
+            SequenceElement::Float => "Float",
+            SequenceElement::Angle => "Angle",
+            SequenceElement::Intensity => "Intensity",
+            SequenceElement::Color => "Color",
+        }
+    }
+
+    pub fn as_type(self) -> Type {
+        match self {
+            SequenceElement::Int => Type::Int,
+            SequenceElement::Float => Type::Float,
+            SequenceElement::Angle => Type::Angle,
+            SequenceElement::Intensity => Type::Intensity,
+            SequenceElement::Color => Type::Color,
+        }
+    }
+
+    /// The inverse of [`SequenceElement::as_type`]. `None` for `Bool`,
+    /// `Duration`, `Frequency`, `Tempo`, `Signal(_)` and `Sequence(_)`
+    /// itself — none of those are valid inside `Sequence<...>` in V1.
+    pub fn from_type(ty: Type) -> Option<SequenceElement> {
+        Self::ALL.iter().copied().find(|e| e.as_type() == ty)
+    }
+}
+
+impl fmt::Display for SequenceElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// Resolves a full (possibly-generic) type annotation to a [`Type`] —
 /// the generic-aware counterpart to [`Type::from_name`], which only
-/// handles flat base names. This is the single place that decides `Signal`
-/// is the one generic type name Lux currently has, and which element
-/// types it may wrap.
+/// handles flat base names. This is the single place that decides
+/// `Signal`/`Sequence` are the generic type names Lux currently has, and
+/// which element types each may wrap.
 pub fn resolve_annotation(ann: &lux_hir::TypeAnnotation) -> Result<Type, crate::error::TypeError> {
     use crate::error::TypeError;
 
@@ -176,6 +247,32 @@ pub fn resolve_annotation(ann: &lux_hir::TypeAnnotation) -> Result<Type, crate::
             .ok_or_else(|| {
                 TypeError::new(format!("`Signal<{inner}>` is not supported"), arg.span)
                     .with_help("`Signal` may wrap `Int`, `Float`, `Angle`, `Intensity` or `Color`")
+            });
+    }
+
+    if ann.name == "Sequence" {
+        let [arg] = ann.type_args.as_slice() else {
+            return Err(TypeError::new(
+                format!(
+                    "`Sequence` expects exactly one type argument, found {}",
+                    ann.type_args.len()
+                ),
+                ann.span,
+            ));
+        };
+        if !arg.type_args.is_empty() {
+            return Err(TypeError::new(
+                "`Sequence<Sequence<...>>` is not supported — sequences cannot wrap other sequences",
+                arg.span,
+            ));
+        }
+        let inner = resolve_annotation(arg)?;
+        return SequenceElement::from_type(inner)
+            .map(Type::Sequence)
+            .ok_or_else(|| {
+                TypeError::new(format!("`Sequence<{inner}>` is not supported"), arg.span).with_help(
+                    "`Sequence` may wrap `Int`, `Float`, `Angle`, `Intensity` or `Color`",
+                )
             });
     }
 
@@ -234,5 +331,74 @@ mod tests {
             Type::Signal(SignalElement::Color).to_string(),
             "Signal<Color>"
         );
+    }
+
+    #[test]
+    fn sequence_element_round_trips() {
+        for &elem in SequenceElement::ALL {
+            assert_eq!(SequenceElement::from_type(elem.as_type()), Some(elem));
+        }
+    }
+
+    #[test]
+    fn non_sequence_element_types_are_not_sequence_elements() {
+        for ty in [Type::Bool, Type::Duration, Type::Frequency, Type::Tempo] {
+            assert_eq!(SequenceElement::from_type(ty), None);
+        }
+        assert_eq!(
+            SequenceElement::from_type(Type::Sequence(SequenceElement::Int)),
+            None
+        );
+        assert_eq!(
+            SequenceElement::from_type(Type::Signal(SignalElement::Int)),
+            None
+        );
+    }
+
+    #[test]
+    fn sequence_type_displays_with_element() {
+        assert_eq!(
+            Type::Sequence(SequenceElement::Color).to_string(),
+            "Sequence<Color>"
+        );
+        assert_eq!(
+            Type::Sequence(SequenceElement::Intensity).to_string(),
+            "Sequence<Intensity>"
+        );
+    }
+
+    #[test]
+    fn resolve_sequence_annotation() {
+        let ann = lux_hir::TypeAnnotation {
+            name: "Sequence".into(),
+            span: lux_syntax::Span::new(0, 0),
+            type_args: vec![lux_hir::TypeAnnotation {
+                name: "Color".into(),
+                span: lux_syntax::Span::new(0, 0),
+                type_args: vec![],
+            }],
+        };
+        assert_eq!(
+            resolve_annotation(&ann),
+            Ok(Type::Sequence(SequenceElement::Color))
+        );
+    }
+
+    #[test]
+    fn resolve_nested_sequence_annotation_is_rejected() {
+        let ann = lux_hir::TypeAnnotation {
+            name: "Sequence".into(),
+            span: lux_syntax::Span::new(0, 0),
+            type_args: vec![lux_hir::TypeAnnotation {
+                name: "Sequence".into(),
+                span: lux_syntax::Span::new(0, 0),
+                type_args: vec![lux_hir::TypeAnnotation {
+                    name: "Color".into(),
+                    span: lux_syntax::Span::new(0, 0),
+                    type_args: vec![],
+                }],
+            }],
+        };
+        assert!(resolve_annotation(&ann).is_err());
     }
 }

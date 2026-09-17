@@ -232,6 +232,15 @@ pub enum HirExpr {
         args: Vec<HirExpr>,
         span: Span,
     },
+    /// `<receiver>[<index>]`, resolved — e.g. `palette[0]`. V1 only
+    /// supports indexing a `Sequence<T>` with an `Int`; that's
+    /// `lux-typeck`'s call, not this crate's (same "resolve names, not
+    /// semantics" split as every other `HirExpr` variant).
+    Index {
+        receiver: Box<HirExpr>,
+        index: Box<HirExpr>,
+        span: Span,
+    },
 }
 
 impl HirExpr {
@@ -243,6 +252,7 @@ impl HirExpr {
             HirExpr::Binary { span, .. } => *span,
             HirExpr::Call(call) => call.span,
             HirExpr::MethodCall { span, .. } => *span,
+            HirExpr::Index { span, .. } => *span,
         }
     }
 }

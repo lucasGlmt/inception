@@ -1,0 +1,15 @@
+import std.Sequence;
+
+scene main {
+    let colors = Sequence.of(red, blue);
+    let intensities = Sequence.of(10%, 50%, 100%);
+    let angles = Sequence.of(0deg, 90deg, 180deg);
+    let floats = Sequence.of(1.0, 2.0, 3.0);
+    let ints = Sequence.of(1, 2, 3);
+
+    let a: Color = colors[0];
+    let b: Intensity = intensities[1];
+    let c: Angle = angles[2];
+    let d: Float = floats[0];
+    let e: Int = ints[0];
+}

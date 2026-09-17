@@ -195,6 +195,10 @@ impl Builder {
                 });
                 1 - *arg_count as i8
             }
+            MirInstruction::Index => {
+                code.push(Instruction::Index);
+                -1
+            }
         };
 
         if stack_delta > 0 {
@@ -270,6 +274,16 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::SignalPhase => B::SignalPhase,
         S::SignalSpread => B::SignalSpread,
         S::SignalInvert => B::SignalInvert,
+        S::SequenceOfInt => B::SequenceOfInt,
+        S::SequenceOfFloat => B::SequenceOfFloat,
+        S::SequenceOfAngle => B::SequenceOfAngle,
+        S::SequenceOfIntensity => B::SequenceOfIntensity,
+        S::SequenceOfColor => B::SequenceOfColor,
+        S::SequenceLengthInt => B::SequenceLengthInt,
+        S::SequenceLengthFloat => B::SequenceLengthFloat,
+        S::SequenceLengthAngle => B::SequenceLengthAngle,
+        S::SequenceLengthIntensity => B::SequenceLengthIntensity,
+        S::SequenceLengthColor => B::SequenceLengthColor,
     }
 }
 
@@ -285,6 +299,9 @@ fn to_value_type(ty: Type) -> lux_bytecode::ValueType {
         Type::Frequency => lux_bytecode::ValueType::Frequency,
         Type::Tempo => lux_bytecode::ValueType::Tempo,
         Type::Signal(elem) => lux_bytecode::ValueType::Signal(to_scalar_value_type(elem)),
+        Type::Sequence(elem) => {
+            lux_bytecode::ValueType::Sequence(to_sequence_scalar_value_type(elem))
+        }
     }
 }
 
@@ -295,6 +312,18 @@ fn to_scalar_value_type(elem: lux_typeck::SignalElement) -> lux_bytecode::Scalar
         lux_typeck::SignalElement::Angle => lux_bytecode::ScalarValueType::Angle,
         lux_typeck::SignalElement::Intensity => lux_bytecode::ScalarValueType::Intensity,
         lux_typeck::SignalElement::Color => lux_bytecode::ScalarValueType::Color,
+    }
+}
+
+fn to_sequence_scalar_value_type(
+    elem: lux_typeck::SequenceElement,
+) -> lux_bytecode::ScalarValueType {
+    match elem {
+        lux_typeck::SequenceElement::Int => lux_bytecode::ScalarValueType::Int,
+        lux_typeck::SequenceElement::Float => lux_bytecode::ScalarValueType::Float,
+        lux_typeck::SequenceElement::Angle => lux_bytecode::ScalarValueType::Angle,
+        lux_typeck::SequenceElement::Intensity => lux_bytecode::ScalarValueType::Intensity,
+        lux_typeck::SequenceElement::Color => lux_bytecode::ScalarValueType::Color,
     }
 }
 

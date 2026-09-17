@@ -41,4 +41,28 @@ pub enum IntrinsicId {
     SignalPhase,
     SignalSpread,
     SignalInvert,
+    /// Builds a `Sequence<T>` from `arg_count` popped `T` values (checked
+    /// homogeneous by `lux-typeck` before this is ever resolved to — see
+    /// `crate::registry`'s `Sequence` module docs). Monomorphized per
+    /// element type, matching `SignalConstant*`'s style, but — unlike
+    /// every other intrinsic in this enum — variadic: `arg_count` is not
+    /// fixed per `Signature`, so this is dispatched specially by
+    /// `inception-vm`'s `Vm` rather than through `eval_intrinsic`, exactly
+    /// like `SignalConstant*`/`Effects*` (see that crate's `intrinsic`
+    /// module doc), and `lux_bytecode::IntrinsicId::param_types`
+    /// deliberately has no fixed-arity entry for these — see that method's
+    /// docs.
+    SequenceOfInt,
+    SequenceOfFloat,
+    SequenceOfAngle,
+    SequenceOfIntensity,
+    SequenceOfColor,
+    /// `Sequence<T>.length() -> Int`, monomorphized per element type like
+    /// `SequenceOf*` — the receiver (a `Sequence<T>`) is the one popped
+    /// operand, see `lux_bytecode::IntrinsicId::param_types`.
+    SequenceLengthInt,
+    SequenceLengthFloat,
+    SequenceLengthAngle,
+    SequenceLengthIntensity,
+    SequenceLengthColor,
 }

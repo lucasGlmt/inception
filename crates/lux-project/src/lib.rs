@@ -613,8 +613,8 @@ name = "demo"
 [source]
 entry = "src/main.lux"
 [rig]
-patch = "rig/patch.lux"
-bindings = "rig/rig.lux"
+patch = "rig/patch.toml"
+bindings = "rig/rig.toml"
 "#,
         )
         .unwrap();
@@ -637,8 +637,8 @@ name = "demo"
 [source]
 entry = "main.lux"
 [rig]
-patch = "patch.lux"
-bindings = "rig.lux"
+patch = "patch.toml"
+bindings = "rig.toml"
 [runtime]
 frequency = 0
 [output]

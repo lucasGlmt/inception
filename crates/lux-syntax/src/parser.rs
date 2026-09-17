@@ -506,14 +506,15 @@ impl Parser {
     }
 
     /// Parses a primary expression, then any number of chained
-    /// `.method(args)` suffixes — e.g. `Effects.sine(2s).phase(90deg).range(5%, 100%)`.
+    /// `.method(args)` and `[index]` suffixes — e.g.
+    /// `Effects.sine(2s).phase(90deg).range(5%, 100%)` or `palette[0]`.
     /// The single-level `Ident . Ident (` case (`Effects.sine(...)`,
     /// `wave.range(...)`) is already fully consumed by
     /// `parse_primary_expression`'s own qualified-call handling — this
-    /// loop only ever fires for a *further* `.method(...)` chained after
-    /// whatever that returned, which can't be a bare identifier anymore
-    /// (it's already a `Call`/`MethodCall`/... at that point), so there is
-    /// no ambiguity between the two.
+    /// loop only ever fires for a *further* `.method(...)`/`[...]` chained
+    /// after whatever that returned, which can't be a bare identifier
+    /// anymore (it's already a `Call`/`MethodCall`/`Index`/... at that
+    /// point), so there is no ambiguity between the two.
     fn parse_postfix_expression(&mut self) -> Expression {
         let mut expr = self.parse_primary_expression();
         loop {
@@ -524,11 +525,27 @@ impl Parser {
                 self.advance(); // `.`
                 let method = self.expect_identifier("expected method name after `.`");
                 expr = self.parse_method_call(expr, method);
+            } else if self.check(TokenKind::LBracket) {
+                expr = self.parse_index(expr);
             } else {
                 break;
             }
         }
         expr
+    }
+
+    /// `<receiver> [ <index> ]`, e.g. `palette[0]`.
+    fn parse_index(&mut self, receiver: Expression) -> Expression {
+        self.advance(); // `[`
+        let index = self.parse_expression();
+        let close = self.expect(TokenKind::RBracket, "expected `]` after index expression");
+        let end = close.map(|t| t.span.end).unwrap_or(index.span().end);
+        let span = Span::new(receiver.span().start, end);
+        Expression::Index(IndexExpr {
+            receiver: Box::new(receiver),
+            index: Box::new(index),
+            span,
+        })
     }
 
     fn parse_method_call(&mut self, receiver: Expression, method: Identifier) -> Expression {
@@ -1251,5 +1268,81 @@ mod tests {
             errors.len() >= 2,
             "expected at least 2 errors, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn parses_index_expression() {
+        let file = parse("scene main { let x = palette[0]; }").unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene");
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Index(index) = &let_stmt.value else {
+            panic!("expected index expression, got {:?}", let_stmt.value);
+        };
+        assert!(matches!(*index.receiver, Expression::Identifier(_)));
+        assert!(matches!(
+            *index.index,
+            Expression::Literal(Literal::Int(0), _)
+        ));
+    }
+
+    #[test]
+    fn parses_chained_index_after_method_call() {
+        let file = parse("scene main { let x = Sequence.of(1, 2).length(); }").unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene");
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        assert!(matches!(let_stmt.value, Expression::MethodCall(_)));
+    }
+
+    #[test]
+    fn parses_index_on_call_result() {
+        let file = parse("scene main { let x = Sequence.of(1, 2)[0]; }").unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene");
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Index(index) = &let_stmt.value else {
+            panic!("expected index expression, got {:?}", let_stmt.value);
+        };
+        assert!(matches!(*index.receiver, Expression::Call(_)));
+    }
+
+    #[test]
+    fn parses_sequence_generic_type_annotation() {
+        let file = parse(
+            r#"
+                scene main {
+                    let s: Sequence<Color> = x;
+                }
+                "#,
+        )
+        .unwrap();
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene");
+        };
+        match &scene.body.statements[0] {
+            Statement::Let(let_stmt) => {
+                let annotation = let_stmt.type_annotation.as_ref().unwrap();
+                assert_eq!(annotation.name, "Sequence");
+                assert_eq!(annotation.type_args.len(), 1);
+                assert_eq!(annotation.type_args[0].name, "Color");
+            }
+            other => panic!("expected let statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_closing_bracket_is_an_error() {
+        let result = parse("scene main { let x = palette[0; }");
+        assert!(result.is_err());
     }
 }

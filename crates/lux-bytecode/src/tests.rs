@@ -655,3 +655,173 @@ fn signal_is_not_its_element_type() {
         }
     )));
 }
+
+#[test]
+fn valid_sequence_of_construction_passes() {
+    let module = function_with(
+        vec![Constant::Int(1), Constant::Int(2), Constant::Int(3)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::Const(ConstantId(2)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 3,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        3,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn sequence_of_with_zero_arg_count_is_rejected() {
+    let module = function_with(
+        vec![],
+        vec![],
+        vec![
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 0,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        1,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(
+        |e| e.kind == VerificationErrorKind::EmptyVariadicIntrinsic(IntrinsicId::SequenceOfInt)
+    ));
+}
+
+#[test]
+fn sequence_of_with_mismatched_element_type_is_rejected() {
+    let module = function_with(
+        vec![
+            Constant::Int(1),
+            Constant::Color(crate::value::ColorValue { r: 255, g: 0, b: 0 }),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 2,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(errors.iter().any(|e| matches!(
+        e.kind,
+        VerificationErrorKind::InvalidVariadicIntrinsicOperand {
+            intrinsic: IntrinsicId::SequenceOfInt,
+            expected: ValueType::Int,
+            found: ValueType::Color,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn valid_sequence_index_passes() {
+    let module = function_with(
+        vec![Constant::Int(1), Constant::Int(2), Constant::Int(0)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 2,
+            },
+            Instruction::Const(ConstantId(2)),
+            Instruction::Index,
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        3,
+    );
+    verify(&module).expect("valid module should verify");
+}
+
+#[test]
+fn indexing_a_non_sequence_is_rejected() {
+    let module = function_with(
+        vec![Constant::Int(1), Constant::Int(0)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::Const(ConstantId(1)),
+            Instruction::Index,
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == VerificationErrorKind::IndexOnNonSequence(ValueType::Int))
+    );
+}
+
+#[test]
+fn indexing_with_a_non_int_index_is_rejected() {
+    let module = function_with(
+        vec![
+            Constant::Int(1),
+            Constant::Color(crate::value::ColorValue { r: 0, g: 0, b: 0 }),
+        ],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 1,
+            },
+            Instruction::Const(ConstantId(1)),
+            Instruction::Index,
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    let errors = verify(&module).expect_err("should be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.kind == VerificationErrorKind::InvalidIndexOperand(ValueType::Color))
+    );
+}
+
+#[test]
+fn valid_sequence_length_passes() {
+    let module = function_with(
+        vec![Constant::Int(1)],
+        vec![],
+        vec![
+            Instruction::Const(ConstantId(0)),
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceOfInt,
+                arg_count: 1,
+            },
+            Instruction::CallIntrinsic {
+                intrinsic: IntrinsicId::SequenceLengthInt,
+                arg_count: 1,
+            },
+            Instruction::Pop,
+            Instruction::Return,
+        ],
+        2,
+    );
+    verify(&module).expect("valid module should verify");
+}

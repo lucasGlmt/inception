@@ -88,4 +88,14 @@ pub enum Instruction {
         target: TargetId,
         attribute: Attribute,
     },
+
+    /// Pops an `Int` index, then a `Sequence<T>` receiver, and pushes the
+    /// element at that index — `<receiver>[<index>]`. Net stack effect is
+    /// `-1`. Not a `CallIntrinsic`: indexing is language syntax, not a
+    /// named stdlib function, matching `Add`/`Sub`/`Wait`'s style of a
+    /// dedicated opcode with dynamically-typed verification (see
+    /// `verify.rs`) rather than a fixed `param_types()` table — the
+    /// element type isn't fixed per instruction, it's whatever
+    /// `Sequence<T>` the receiver on the stack actually is.
+    Index,
 }

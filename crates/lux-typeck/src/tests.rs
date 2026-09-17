@@ -3,7 +3,7 @@ use lux_hir::TargetEnvironment;
 use crate::checker::check;
 use crate::error::TypeError;
 use crate::program::TypedProgram;
-use crate::types::Type;
+use crate::types::{SequenceElement, Type};
 
 fn check_source(source: &str) -> Result<TypedProgram, Vec<TypeError>> {
     check_source_with_targets(source, &TargetEnvironment::new())
@@ -1254,4 +1254,189 @@ fn signal_binding_with_range_to_angle_is_rejected() {
         e.message
             .contains("expected `Signal<Intensity>`, found `Signal<Angle>`")
     }));
+}
+
+// --- Sequence<T> --------------------------------------------------------
+
+#[test]
+fn sequence_of_infers_the_element_type() {
+    for (values, expected) in [
+        ("red, blue", "Sequence<Color>"),
+        ("10%, 20%, 30%", "Sequence<Intensity>"),
+        ("1.0, 2.0, 3.0", "Sequence<Float>"),
+        ("0deg, 90deg", "Sequence<Angle>"),
+        ("1, 2, 3", "Sequence<Int>"),
+    ] {
+        let source = format!(
+            r#"
+            import std.Sequence;
+            scene main {{
+                let a = Sequence.of({values});
+            }}
+            "#
+        );
+        let typed =
+            check_source(&source).unwrap_or_else(|e| panic!("{values}: unexpected errors: {e:?}"));
+        assert_eq!(typed.scenes[0].local_types[0].to_string(), expected);
+    }
+}
+
+#[test]
+fn sequence_of_mixed_types_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let bad = Sequence.of(red, 50%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected `Color`, found `Intensity`"))
+    );
+}
+
+#[test]
+fn sequence_annotation_mismatch_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let x: Sequence<Color> = Sequence.of(10%, 20%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Sequence<Color>`, found `Sequence<Intensity>`")
+    }));
+}
+
+#[test]
+fn empty_sequence_of_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let bad = Sequence.of();
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("cannot infer element type of empty Sequence")
+    }));
+}
+
+#[test]
+fn sequence_length_returns_int() {
+    let result = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(red, blue, white);
+            let n = s.length();
+        }
+        "#,
+    );
+    let typed = result.unwrap_or_else(|e| panic!("unexpected errors: {e:?}"));
+    assert_eq!(typed.scenes[0].local_types[1], Type::Int);
+}
+
+#[test]
+fn sequence_length_on_non_sequence_is_rejected() {
+    let errors = check_source(
+        r#"
+        scene main {
+            let x = 5;
+            let bad = x.length();
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("no method `length`"))
+    );
+}
+
+#[test]
+fn sequence_indexing_returns_element_type() {
+    let result = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(red, blue, white);
+            let first: Color = s[0];
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn sequence_index_with_non_int_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(red, blue);
+            let bad = s[50%];
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Int` index, found `Intensity`")
+    }));
+}
+
+#[test]
+fn indexing_a_non_sequence_is_rejected() {
+    let errors = check_source(
+        r#"
+        scene main {
+            let x = 5;
+            let bad = x[0];
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("cannot index into type `Int`"))
+    );
+}
+
+#[test]
+fn nested_sequence_annotation_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Sequence;
+        scene main {
+            let bad: Sequence<Sequence<Color>> = Sequence.of(red, blue);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("Sequence<Sequence<...>>"))
+    );
+}
+
+#[test]
+fn sequence_element_from_type_matches_registered_types() {
+    for elem in SequenceElement::ALL.iter().copied() {
+        assert_eq!(SequenceElement::from_type(elem.as_type()), Some(elem));
+    }
 }

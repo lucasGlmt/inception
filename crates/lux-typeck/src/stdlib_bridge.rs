@@ -9,7 +9,7 @@
 
 use lux_stdlib::ParamType;
 
-use crate::types::{SignalElement, Type};
+use crate::types::{SequenceElement, SignalElement, Type};
 
 /// Total: every `Type` maps to *some* `ParamType`. `Bool`/`Frequency`/
 /// `Tempo` have no stdlib representation, so they map to
@@ -21,7 +21,12 @@ use crate::types::{SignalElement, Type};
 /// `Signal.constant`'s *return* type is a signal), so passing one as an
 /// argument anywhere should behave exactly like passing a `Bool`.
 /// `Type::Duration` *is* representable (`ParamType::Duration`), first used
-/// by `std.Effects`'s oscillator `period` parameters.
+/// by `std.Effects`'s oscillator `period` parameters. `Type::Sequence(_)`
+/// maps to `Unsupported` for the same reason `Type::Signal(_)` does: no
+/// stdlib function accepts a `Sequence` *argument* in V1 (`Sequence.of`'s
+/// arguments are its future *elements*, checked directly by
+/// `crate::checker::Checker::check_call`, never through this conversion —
+/// see that method's docs).
 pub fn to_param_type(ty: Type) -> ParamType {
     match ty {
         Type::Int => ParamType::Int,
@@ -30,7 +35,27 @@ pub fn to_param_type(ty: Type) -> ParamType {
         Type::Intensity => ParamType::Intensity,
         Type::Color => ParamType::Color,
         Type::Duration => ParamType::Duration,
-        Type::Bool | Type::Frequency | Type::Tempo | Type::Signal(_) => ParamType::Unsupported,
+        Type::Bool | Type::Frequency | Type::Tempo | Type::Signal(_) | Type::Sequence(_) => {
+            ParamType::Unsupported
+        }
+    }
+}
+
+/// The `ParamType` tag for a `Sequence<T>` *receiver* — e.g. selecting
+/// which of `.length()`'s 5 monomorphized overloads a `Sequence<Color>`
+/// value resolves to (see `lux_stdlib::methods::resolve_sequence_method`).
+/// Distinct from [`to_param_type`] (which maps `Type::Sequence(_)` to
+/// `Unsupported`, since no function ever accepts one as an *argument*):
+/// this is only ever used to tag which builtin-method table a `Sequence`
+/// *receiver* dispatches into, the same role `Type::Signal(SignalElement::Float)`
+/// plays for `Signal<Float>`'s single builtin-method table.
+pub fn sequence_element_param_type(elem: SequenceElement) -> ParamType {
+    match elem {
+        SequenceElement::Int => ParamType::SequenceInt,
+        SequenceElement::Float => ParamType::SequenceFloat,
+        SequenceElement::Angle => ParamType::SequenceAngle,
+        SequenceElement::Intensity => ParamType::SequenceIntensity,
+        SequenceElement::Color => ParamType::SequenceColor,
     }
 }
 
@@ -50,6 +75,11 @@ pub fn from_param_type(ty: ParamType) -> Type {
         ParamType::SignalAngle => Type::Signal(SignalElement::Angle),
         ParamType::SignalIntensity => Type::Signal(SignalElement::Intensity),
         ParamType::SignalColor => Type::Signal(SignalElement::Color),
+        ParamType::SequenceInt => Type::Sequence(SequenceElement::Int),
+        ParamType::SequenceFloat => Type::Sequence(SequenceElement::Float),
+        ParamType::SequenceAngle => Type::Sequence(SequenceElement::Angle),
+        ParamType::SequenceIntensity => Type::Sequence(SequenceElement::Intensity),
+        ParamType::SequenceColor => Type::Sequence(SequenceElement::Color),
         ParamType::Unsupported => unreachable!(
             "from_param_type: no stdlib signature returns `Unsupported` — \
              this would mean a `Signature::return_ty` was misconfigured"
@@ -101,6 +131,38 @@ mod tests {
     fn unrepresentable_types_map_to_unsupported() {
         for ty in [Type::Bool, Type::Frequency, Type::Tempo] {
             assert_eq!(to_param_type(ty), ParamType::Unsupported);
+        }
+    }
+
+    #[test]
+    fn sequence_return_types_round_trip() {
+        for (param, elem) in [
+            (ParamType::SequenceInt, SequenceElement::Int),
+            (ParamType::SequenceFloat, SequenceElement::Float),
+            (ParamType::SequenceAngle, SequenceElement::Angle),
+            (ParamType::SequenceIntensity, SequenceElement::Intensity),
+            (ParamType::SequenceColor, SequenceElement::Color),
+        ] {
+            assert_eq!(from_param_type(param), Type::Sequence(elem));
+        }
+    }
+
+    #[test]
+    fn sequence_type_as_an_argument_is_unsupported() {
+        // No stdlib function accepts a `Sequence` parameter in V1.
+        assert_eq!(
+            to_param_type(Type::Sequence(SequenceElement::Color)),
+            ParamType::Unsupported
+        );
+    }
+
+    #[test]
+    fn sequence_element_param_type_matches_return_type_tags() {
+        for elem in SequenceElement::ALL.iter().copied() {
+            assert_eq!(
+                from_param_type(sequence_element_param_type(elem)),
+                Type::Sequence(elem)
+            );
         }
     }
 }

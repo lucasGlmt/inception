@@ -35,8 +35,8 @@ use crate::bounds::bound_for;
 use crate::error::TypeError;
 use crate::program::{TypedProgram, TypedScene};
 use crate::rules::{binary_op_symbol, binary_result_type, unary_result_type};
-use crate::stdlib_bridge::{from_param_type, to_param_type};
-use crate::types::{SignalElement, Type, resolve_annotation};
+use crate::stdlib_bridge::{from_param_type, sequence_element_param_type, to_param_type};
+use crate::types::{SequenceElement, SignalElement, Type, resolve_annotation};
 
 /// Type-checks every scene in `hir`. Returns every diagnostic collected
 /// (not just the first) when checking fails anywhere in the file; on
@@ -333,6 +333,11 @@ impl Checker {
                 args,
                 span,
             } => self.check_method_call(local_types, receiver, method, *method_span, args, *span),
+            HirExpr::Index {
+                receiver,
+                index,
+                span,
+            } => self.check_index(local_types, receiver, index, *span),
         }
     }
 
@@ -353,6 +358,11 @@ impl Checker {
             return None;
         }
         let arg_types: Vec<Type> = arg_types.into_iter().map(Option::unwrap).collect();
+
+        if *module_path == ["std", "Sequence"] && *name == "of" {
+            return self.check_sequence_of(call, &arg_types);
+        }
+
         let param_types: Vec<_> = arg_types.iter().copied().map(to_param_type).collect();
 
         match lux_stdlib::resolve_overload(module_path, name, &param_types) {
@@ -365,6 +375,84 @@ impl Checker {
                 None
             }
         }
+    }
+
+    /// `Sequence.of(values...)`. Deliberately bypasses
+    /// `lux_stdlib::resolve_overload` entirely: every other stdlib
+    /// function has fixed arity per overload (`Signature::params` is a
+    /// fixed-size `'static` slice), but `Sequence.of` accepts any number
+    /// of same-typed arguments — there is no `Signature` shape in
+    /// `lux-stdlib`'s registry that can express that, so this is checked
+    /// directly here instead, the same way `.phase()`/`.spread()`'s extra
+    /// structural restriction is layered *outside* the generic overload
+    /// resolver rather than forced into it (see `is_phase_source_valid`).
+    /// `lux_stdlib::registry`'s 5 `SEQUENCE_OF_*` signatures still exist
+    /// for member-existence checks (`lux-hir`'s `candidates(...).is_empty()`)
+    /// and LSP tooling (hover/completion/signature-help) — they're just
+    /// never resolved through here. `lux_typeck::infer::resolve_call` is
+    /// this method's trusted, re-derivation counterpart for `lux-mir`.
+    fn check_sequence_of(&mut self, call: &HirCall, arg_types: &[Type]) -> Option<Type> {
+        let Some(first) = arg_types.first().copied() else {
+            self.errors.push(
+                TypeError::new("cannot infer element type of empty Sequence", call.span)
+                    .with_help("`Sequence.of()` needs at least one value to know its element type"),
+            );
+            return None;
+        };
+
+        for (arg, &found) in call.args.iter().zip(arg_types) {
+            if found != first {
+                self.errors.push(
+                    TypeError::new(format!("expected `{first}`, found `{found}`"), arg.span())
+                        .with_help("every element of a `Sequence` must have the same type"),
+                );
+                return None;
+            }
+        }
+
+        let Some(elem) = SequenceElement::from_type(first) else {
+            self.errors.push(TypeError::new(
+                format!("`Sequence<{first}>` is not supported"),
+                call.span,
+            ));
+            return None;
+        };
+
+        Some(Type::Sequence(elem))
+    }
+
+    /// `<receiver>[<index>]` — V1 only supports indexing a `Sequence<T>`
+    /// with an `Int`. Both sides are inferred independently first (like
+    /// `Binary`), so an error in one doesn't hide an error in the other.
+    fn check_index(
+        &mut self,
+        local_types: &HashMap<LocalId, Type>,
+        receiver: &HirExpr,
+        index: &HirExpr,
+        span: Span,
+    ) -> Option<Type> {
+        let receiver_ty = self.infer(local_types, receiver);
+        let index_ty = self.infer(local_types, index);
+        let receiver_ty = receiver_ty?;
+        let index_ty = index_ty?;
+
+        let Type::Sequence(elem) = receiver_ty else {
+            self.errors.push(
+                TypeError::new(format!("cannot index into type `{receiver_ty}`"), span)
+                    .with_help("only `Sequence<T>` can be indexed"),
+            );
+            return None;
+        };
+
+        if index_ty != Type::Int {
+            self.errors.push(TypeError::new(
+                format!("expected `Int` index, found `{index_ty}`"),
+                index.span(),
+            ));
+            return None;
+        }
+
+        Some(elem.as_type())
     }
 
     fn report_overload_error(
@@ -426,12 +514,12 @@ impl Checker {
         }
     }
 
-    /// `<receiver>.<method>(<args>)`. In V1 every builtin method
-    /// (`range`/`phase`/`invert`) is only defined on `Signal<Float>`, so
-    /// this checks the receiver's type once, up front, rather than baking
-    /// that requirement into each method's own signature — the same
-    /// reason `Signature::params` for these never lists the receiver
-    /// (see `lux_stdlib::methods`'s module doc).
+    /// `<receiver>.<method>(<args>)`. In V1 builtin methods only exist on
+    /// `Signal<Float>` (`range`/`phase`/`spread`/`invert`) and `Sequence<T>`
+    /// (`length`), so this checks the receiver's type once, up front,
+    /// rather than baking that requirement into each method's own
+    /// signature — the same reason `Signature::params` for these never
+    /// lists the receiver (see `lux_stdlib::methods`'s module doc).
     fn check_method_call(
         &mut self,
         local_types: &HashMap<LocalId, Type>,
@@ -453,20 +541,44 @@ impl Checker {
         let arg_types: Vec<Type> = arg_types.into_iter().map(Option::unwrap).collect();
 
         let receiver_ty = receiver_ty?;
-        if receiver_ty != Type::Signal(SignalElement::Float) {
-            self.errors.push(
-                TypeError::new(
-                    format!("no method `{method}` on type `{receiver_ty}`"),
-                    method_span,
-                )
-                .with_help(
-                    "`.range()`/`.phase()`/`.spread()`/`.invert()` are only defined on \
-                     `Signal<Float>`",
-                ),
-            );
-            return None;
+        match receiver_ty {
+            Type::Signal(SignalElement::Float) => self.check_signal_float_method(
+                receiver,
+                method,
+                method_span,
+                call_span,
+                args,
+                &arg_types,
+            ),
+            Type::Sequence(elem) => {
+                self.check_sequence_method(elem, method, method_span, call_span, args, &arg_types)
+            }
+            _ => {
+                self.errors.push(
+                    TypeError::new(
+                        format!("no method `{method}` on type `{receiver_ty}`"),
+                        method_span,
+                    )
+                    .with_help(
+                        "`.range()`/`.phase()`/`.spread()`/`.invert()` are only defined on \
+                         `Signal<Float>`; `.length()` is only defined on `Sequence<T>`",
+                    ),
+                );
+                None
+            }
         }
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn check_signal_float_method(
+        &mut self,
+        receiver: &HirExpr,
+        method: &str,
+        method_span: Span,
+        call_span: Span,
+        args: &[HirExpr],
+        arg_types: &[Type],
+    ) -> Option<Type> {
         // `.phase()` and `.spread()` both additionally require their
         // receiver to be, transitively through other `.phase()` calls, a
         // direct `Effects` oscillator — see this function's caller-facing
@@ -495,11 +607,12 @@ impl Checker {
             Ok(sig) => Some(from_param_type(sig.return_ty)),
             Err(err) => {
                 self.report_method_overload_error(
+                    Type::Signal(SignalElement::Float),
                     method,
                     method_span,
                     call_span,
                     args,
-                    &arg_types,
+                    arg_types,
                     err,
                 );
                 None
@@ -507,8 +620,40 @@ impl Checker {
         }
     }
 
+    /// `<receiver: Sequence<T>>.<method>(<args>)` — in V1, only `.length()`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_sequence_method(
+        &mut self,
+        elem: SequenceElement,
+        method: &str,
+        method_span: Span,
+        call_span: Span,
+        args: &[HirExpr],
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        let receiver_tag = sequence_element_param_type(elem);
+        let param_types: Vec<_> = arg_types.iter().copied().map(to_param_type).collect();
+        match lux_stdlib::resolve_sequence_method(receiver_tag, method, &param_types) {
+            Ok(sig) => Some(from_param_type(sig.return_ty)),
+            Err(err) => {
+                self.report_method_overload_error(
+                    Type::Sequence(elem),
+                    method,
+                    method_span,
+                    call_span,
+                    args,
+                    arg_types,
+                    err,
+                );
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn report_method_overload_error(
         &mut self,
+        receiver_ty: Type,
         method: &str,
         method_span: Span,
         call_span: Span,
@@ -519,7 +664,7 @@ impl Checker {
         match err {
             OverloadError::UnknownModule | OverloadError::UnknownMember => {
                 self.errors.push(TypeError::new(
-                    format!("no method `{method}` on `Signal<Float>`"),
+                    format!("no method `{method}` on `{receiver_ty}`"),
                     method_span,
                 ));
             }
@@ -535,7 +680,13 @@ impl Checker {
                 ));
             }
             OverloadError::NoMatchingOverload => {
-                let candidates = lux_stdlib::signal_float_method_candidates(method);
+                let candidates = match receiver_ty {
+                    Type::Sequence(elem) => lux_stdlib::sequence_method_candidates(
+                        sequence_element_param_type(elem),
+                        method,
+                    ),
+                    _ => lux_stdlib::signal_float_method_candidates(method),
+                };
                 if method == "range" && arg_types.len() == 2 && arg_types[0] != arg_types[1] {
                     self.errors.push(TypeError::new(
                         format!(

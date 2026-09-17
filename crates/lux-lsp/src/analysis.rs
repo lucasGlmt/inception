@@ -291,6 +291,11 @@ impl AnalysisSnapshot {
             if self.receiver_is_signal_float(offset, receiver) {
                 return signal_float_method_completions(prefix);
             }
+            // Same disambiguation, generalized to a `Sequence<T>`
+            // receiver (`palette.length()`) — see `receiver_sequence_element`.
+            if self.receiver_sequence_element(offset, receiver).is_some() {
+                return sequence_method_completions(prefix);
+            }
             return self
                 .role_members(receiver)
                 .into_iter()
@@ -457,7 +462,11 @@ impl AnalysisSnapshot {
         } else if self.receiver_is_signal_float(offset, qualifier) {
             lux_stdlib::signal_float_method_candidates(name)
         } else {
-            return None;
+            let elem = self.receiver_sequence_element(offset, qualifier)?;
+            lux_stdlib::sequence_method_candidates(
+                lux_typeck::stdlib_bridge::sequence_element_param_type(elem),
+                name,
+            )
         };
         if candidates.is_empty() {
             return None;
@@ -626,6 +635,25 @@ impl AnalysisSnapshot {
             || parsed_expression_type(receiver) == Some(target)
     }
 
+    /// The `SequenceElement` a receiver resolves to, if it's a
+    /// `Sequence<T>` — the `Sequence` counterpart to
+    /// `receiver_is_signal_float`, same lookup order and rationale.
+    fn receiver_sequence_element(
+        &self,
+        offset: usize,
+        receiver: &str,
+    ) -> Option<lux_typeck::SequenceElement> {
+        let from_local = self
+            .visible_locals(offset)
+            .into_iter()
+            .find(|local| local.name == receiver)
+            .and_then(|local| local.ty);
+        match from_local.or_else(|| parsed_expression_type(receiver)) {
+            Some(Type::Sequence(elem)) => Some(elem),
+            _ => None,
+        }
+    }
+
     pub fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.document.map.offset(&self.document.source, position);
         let word = word_at(&self.document.source, offset)?;
@@ -650,6 +678,21 @@ impl AnalysisSnapshot {
                 lux_stdlib::SIGNAL_FLOAT_METHODS
                     .iter()
                     .find(|sig| sig.name == word.0)
+            })
+        {
+            value = Some(format!(
+                "```lux\n{}\n```\n\n{}",
+                signature_label(sig),
+                sig.doc
+            ));
+        } else if let Some(sig) = receiver_expr_before(&self.document.source, word.1)
+            .and_then(|receiver| self.receiver_sequence_element(offset, receiver))
+            .and_then(|elem| {
+                lux_stdlib::sequence_method_candidates(
+                    lux_typeck::stdlib_bridge::sequence_element_param_type(elem),
+                    word.0,
+                )
+                .first()
             })
         {
             value = Some(format!(
@@ -1114,6 +1157,16 @@ fn expression_type(expression: &Expression) -> Option<Type> {
         Expression::Call(call) => {
             let qualifier = call.callee.qualifier.as_ref()?;
             let module = lux_stdlib::find_module_by_short_name(&qualifier.name)?;
+            // `Sequence.of` is variadic — `resolve_return_type`'s
+            // arity-based overload matching (built for fixed-arity stdlib
+            // functions) doesn't apply, so its element type is instead
+            // heuristically inferred straight from the first argument,
+            // mirroring `lux_typeck::infer::resolve_call`'s trusted
+            // re-derivation for the real compiler.
+            if module.short_name == "Sequence" && call.callee.name.name == "of" {
+                let elem = expression_type(call.args.first()?)?;
+                return lux_typeck::SequenceElement::from_type(elem).map(Type::Sequence);
+            }
             resolve_return_type(
                 lux_stdlib::candidates(module.path, &call.callee.name.name),
                 &call.args,
@@ -1121,6 +1174,15 @@ fn expression_type(expression: &Expression) -> Option<Type> {
         }
         Expression::MethodCall(method_call) => {
             let receiver_ty = expression_type(&method_call.receiver)?;
+            if let Type::Sequence(elem) = receiver_ty {
+                return resolve_return_type(
+                    lux_stdlib::sequence_method_candidates(
+                        lux_typeck::stdlib_bridge::sequence_element_param_type(elem),
+                        &method_call.method.name,
+                    ),
+                    &method_call.args,
+                );
+            }
             if receiver_ty != Type::Signal(lux_typeck::SignalElement::Float) {
                 return None;
             }
@@ -1129,6 +1191,10 @@ fn expression_type(expression: &Expression) -> Option<Type> {
                 &method_call.args,
             )
         }
+        Expression::Index(index_expr) => match expression_type(&index_expr.receiver)? {
+            Type::Sequence(elem) => Some(elem.as_type()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1398,6 +1464,27 @@ fn signal_float_method_completions(prefix: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Completion for `palette.$0` where `palette` is a `Sequence<T>` local —
+/// `.length()`. In V1 this is the same single method regardless of `T`,
+/// so any one of the 5 monomorphized `Sequence<T>` receiver tags works
+/// equally well to look it up; `Int` is picked arbitrarily.
+fn sequence_method_completions(prefix: &str) -> Vec<CompletionItem> {
+    lux_stdlib::sequence_method_candidates(lux_stdlib::ParamType::SequenceInt, "length")
+        .iter()
+        .filter(|sig| matches_prefix(sig.name, prefix))
+        .map(|sig| CompletionItem {
+            label: sig.name.into(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(signature_label(sig)),
+            documentation: Some(Documentation::String(sig.doc.into())),
+            insert_text: Some(format!("{}()", sig.name)),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some("1-member".into()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 fn signature_label(sig: &lux_stdlib::Signature) -> String {
     let params = sig
         .params
@@ -1425,6 +1512,11 @@ fn param_type_name(ty: lux_stdlib::ParamType) -> &'static str {
         lux_stdlib::ParamType::SignalAngle => "Signal<Angle>",
         lux_stdlib::ParamType::SignalIntensity => "Signal<Intensity>",
         lux_stdlib::ParamType::SignalColor => "Signal<Color>",
+        lux_stdlib::ParamType::SequenceInt => "Sequence<Int>",
+        lux_stdlib::ParamType::SequenceFloat => "Sequence<Float>",
+        lux_stdlib::ParamType::SequenceAngle => "Sequence<Angle>",
+        lux_stdlib::ParamType::SequenceIntensity => "Sequence<Intensity>",
+        lux_stdlib::ParamType::SequenceColor => "Sequence<Color>",
         lux_stdlib::ParamType::Unsupported => "?",
     }
 }
@@ -1566,6 +1658,10 @@ fn visit_expression(expression: &Expression, visitor: &mut impl FnMut(&Expressio
             for arg in &method_call.args {
                 visit_expression(arg, visitor);
             }
+        }
+        Expression::Index(index_expr) => {
+            visit_expression(&index_expr.receiver, visitor);
+            visit_expression(&index_expr.index, visitor);
         }
         Expression::Grouped(inner, _) => visit_expression(inner, visitor),
         _ => {}
@@ -1841,7 +1937,7 @@ mod tests {
             .into_iter()
             .map(|item| item.label)
             .collect();
-        assert_eq!(labels, ["Math", "Color", "Signal", "Effects"]);
+        assert_eq!(labels, ["Math", "Color", "Signal", "Effects", "Sequence"]);
     }
 
     #[test]
@@ -2337,5 +2433,79 @@ mod tests {
         let marked = format!("{}$0{}", &source[..first_use], &source[first_use..]);
         let (analysis, position) = snapshot(&marked);
         assert_eq!(analysis.references(position, true).len(), 2);
+    }
+
+    #[test]
+    fn sequence_module_member_completion_lists_of() {
+        let (analysis, position) =
+            snapshot("import std.Sequence;\nscene main { let x = Sequence.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["of"]);
+    }
+
+    #[test]
+    fn hover_on_sequence_of_call_shows_its_signature() {
+        let source = "import std.Sequence;\nscene main { let x = Sequence.of(red, blue); }";
+        let pos = source.find("of(").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Sequence<T>"));
+    }
+
+    #[test]
+    fn signature_help_on_sequence_of_lists_every_element_type_overload() {
+        let source = "import std.Sequence;\nscene main { let x = Sequence.of(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 5);
+    }
+
+    #[test]
+    fn hover_on_unannotated_sequence_local_reports_its_full_sequence_type() {
+        let source =
+            "import std.Sequence;\nscene main { let palette = Sequence.of(red, blue, white); }";
+        let use_site = source.find("palette =").unwrap();
+        let marked = format!("{}$0{}", &source[..use_site], &source[use_site..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Sequence<Color>"));
+    }
+
+    #[test]
+    fn sequence_local_member_completion_lists_length() {
+        let source =
+            "import std.Sequence;\nscene main { let s = Sequence.of(1, 2, 3); let n = s.$0 }";
+        let (analysis, position) = snapshot(source);
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["length"]);
+    }
+
+    #[test]
+    fn hover_on_sequence_length_method_shows_its_signature() {
+        let source = "import std.Sequence;\nscene main { let s = Sequence.of(1, 2, 3); let n = s.length(); }";
+        let pos = source.rfind("length").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("length() -> Int"));
     }
 }

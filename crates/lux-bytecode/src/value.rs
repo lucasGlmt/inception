@@ -22,6 +22,10 @@ pub enum ValueType {
     /// separate, non-recursive enum (not `Box<ValueType>`) so `ValueType`
     /// itself stays `Copy` — see `ScalarValueType`'s docs.
     Signal(ScalarValueType),
+    /// `Sequence<T>`, mirroring `lux_typeck::Type::Sequence`. Reuses
+    /// `ScalarValueType` for its element (the same 5-type universe as
+    /// `Signal`) rather than defining a second, identical enum.
+    Sequence(ScalarValueType),
 }
 
 /// The element types a `Signal<T>` may carry — mirrors
@@ -34,6 +38,22 @@ pub enum ScalarValueType {
     Angle,
     Intensity,
     Color,
+}
+
+impl ScalarValueType {
+    /// The plain `ValueType` this scalar corresponds to — used when
+    /// unwrapping a `Signal<T>`/`Sequence<T>`'s element type back to a
+    /// standalone `ValueType`, e.g. `Instruction::Index`'s result type in
+    /// `verify.rs`.
+    pub fn as_value_type(self) -> ValueType {
+        match self {
+            ScalarValueType::Int => ValueType::Int,
+            ScalarValueType::Float => ValueType::Float,
+            ScalarValueType::Angle => ValueType::Angle,
+            ScalarValueType::Intensity => ValueType::Intensity,
+            ScalarValueType::Color => ValueType::Color,
+        }
+    }
 }
 
 /// An RGB color value. Bytecode never sees a named color (`red`, `blue`,

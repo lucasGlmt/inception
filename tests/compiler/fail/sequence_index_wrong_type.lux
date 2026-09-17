@@ -1,0 +1,6 @@
+import std.Sequence;
+
+scene main {
+    let palette = Sequence.of(red, blue);
+    let bad = palette[50%];
+}

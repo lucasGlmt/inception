@@ -1,0 +1,4 @@
+scene main {
+    let x = 5;
+    let bad = x.length();
+}

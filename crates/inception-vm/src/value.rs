@@ -15,6 +15,7 @@
 use inception_core::{AttributeValue, Duration, Intensity, Rgb};
 use lux_bytecode::{Attribute, ColorValue, Constant, ScalarValueType, ValueType};
 
+use crate::sequence::SequenceId;
 use crate::signal::SignalId;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +44,12 @@ pub enum Value {
     /// would otherwise be needed to answer "what kind of signal is this".
     /// Both fields are `Copy`, so this keeps `Value` itself `Copy`.
     Signal(ScalarValueType, SignalId),
+    /// A handle into the executing `Vm`'s `crate::sequence::SequenceStore`,
+    /// tagged with its element type — same "id plus element type, never
+    /// the definition inline" shape as `Value::Signal`, for the same
+    /// reason (`value_type` below must stay total and panic-free without
+    /// needing store access).
+    Sequence(ScalarValueType, SequenceId),
 }
 
 impl Value {
@@ -58,6 +65,7 @@ impl Value {
             Value::Frequency(_) => ValueType::Frequency,
             Value::Tempo(_) => ValueType::Tempo,
             Value::Signal(elem, _) => ValueType::Signal(*elem),
+            Value::Sequence(elem, _) => ValueType::Sequence(*elem),
         }
     }
 

@@ -68,6 +68,23 @@ pub enum VerificationErrorKind {
         expected: ValueType,
         found: ValueType,
     },
+    /// A variadic `CallIntrinsic` (see `IntrinsicId::variadic_element_type`)
+    /// declared `arg_count: 0` — every one of these builds a `Sequence<T>`
+    /// from at least one value, so a zero count can never be valid.
+    EmptyVariadicIntrinsic(IntrinsicId),
+    /// One of a variadic `CallIntrinsic`'s operands, popped off the stack,
+    /// doesn't match `intrinsic.variadic_element_type()`.
+    InvalidVariadicIntrinsicOperand {
+        intrinsic: IntrinsicId,
+        index: usize,
+        expected: ValueType,
+        found: ValueType,
+    },
+    /// `Index`'s receiver (the second-from-top operand) isn't a
+    /// `Sequence<T>`.
+    IndexOnNonSequence(ValueType),
+    /// `Index`'s index operand (the top of the stack) isn't an `Int`.
+    InvalidIndexOperand(ValueType),
     /// Either the function's code doesn't end with `Return`, or it does
     /// but the operand stack isn't empty at that point.
     InvalidReturn,
@@ -293,6 +310,54 @@ fn verify_instruction(
         Instruction::CallIntrinsic {
             intrinsic,
             arg_count,
+        } if intrinsic.variadic_element_type().is_some() => {
+            // `SequenceOf*` and any future variadic intrinsic: `arg_count`
+            // is not fixed per intrinsic, so `param_types()` cannot be
+            // consulted (it panics for these — see its docs). Every
+            // popped operand must instead match
+            // `variadic_element_type()`, and at least one operand is
+            // required (an empty `Sequence` is rejected at compile time,
+            // before this bytecode would ever be generated — see
+            // `lux-typeck`'s `check_sequence_of`).
+            let expected = intrinsic
+                .variadic_element_type()
+                .expect("guarded by this match arm's guard");
+            if arg_count == 0 {
+                errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::EmptyVariadicIntrinsic(intrinsic),
+                ));
+                return;
+            }
+            for arg_index in (0..arg_count as usize).rev() {
+                match stack.pop() {
+                    None => errors.push(VerificationError::at(
+                        function.id,
+                        index,
+                        VerificationErrorKind::StackUnderflow,
+                    )),
+                    Some(found) if found != expected => {
+                        errors.push(VerificationError::at(
+                            function.id,
+                            index,
+                            VerificationErrorKind::InvalidVariadicIntrinsicOperand {
+                                intrinsic,
+                                index: arg_index,
+                                expected,
+                                found,
+                            },
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+            stack.push(intrinsic.return_type());
+        }
+
+        Instruction::CallIntrinsic {
+            intrinsic,
+            arg_count,
         } => {
             let params = intrinsic.param_types();
             if arg_count as usize != params.len() {
@@ -452,6 +517,39 @@ fn verify_instruction(
                     VerificationErrorKind::TypeMismatch { expected, found },
                 )),
                 Some(_) => {}
+            }
+        }
+
+        Instruction::Index => {
+            // Pushed receiver then index, so index is on top and popped
+            // first.
+            let index_ty = stack.pop();
+            let receiver_ty = stack.pop();
+            match index_ty {
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
+                Some(ValueType::Int) => {}
+                Some(found) => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::InvalidIndexOperand(found),
+                )),
+            }
+            match receiver_ty {
+                None => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::StackUnderflow,
+                )),
+                Some(ValueType::Sequence(elem)) => stack.push(elem.as_value_type()),
+                Some(found) => errors.push(VerificationError::at(
+                    function.id,
+                    index,
+                    VerificationErrorKind::IndexOnNonSequence(found),
+                )),
             }
         }
     }

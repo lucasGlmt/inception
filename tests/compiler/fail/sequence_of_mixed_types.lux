@@ -1,0 +1,9 @@
+import std.Sequence;
+
+scene main {
+    let bad = Sequence.of(
+        red,
+        50%,
+        2s
+    );
+}

@@ -80,6 +80,14 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     self.push(TokenKind::RParen, start);
                 }
+                b'[' => {
+                    self.advance();
+                    self.push(TokenKind::LBracket, start);
+                }
+                b']' => {
+                    self.advance();
+                    self.push(TokenKind::RBracket, start);
+                }
                 b',' => {
                     self.advance();
                     self.push(TokenKind::Comma, start);

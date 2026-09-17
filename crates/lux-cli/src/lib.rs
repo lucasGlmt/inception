@@ -129,8 +129,8 @@ mod tests {
             root: root.clone(),
             manifest: root.join("lux.toml"),
             entry: root.join("src/main.lux"),
-            patch: root.join("rig/patch.lux"),
-            bindings: root.join("rig/rig.lux"),
+            patch: root.join("rig/patch.toml"),
+            bindings: root.join("rig/rig.toml"),
             fixtures: root.join("fixtures"),
         }
     }

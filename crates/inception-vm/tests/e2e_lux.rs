@@ -290,3 +290,112 @@ fn a_scene_with_no_wait_finishes_on_the_first_run() {
 
     assert!(vm.is_finished());
 }
+
+/// The `Sequence<T>` milestone's own success criterion (item 27 of the
+/// task brief): `Sequence.of(red, blue, white)` and `palette[0]`, taken
+/// all the way through parsing, HIR, type checking, MIR, bytecode, the
+/// verifier and VM execution — mirroring
+/// `signal_constant_program_compiles_and_runs_to_completion`'s shape for
+/// `Signal<T>`. `inception_vm::sequence`'s unit tests cover
+/// `SequenceStore` itself in isolation.
+#[test]
+fn sequence_of_program_compiles_and_indexes_correctly() {
+    let source = r#"
+        import std.Sequence;
+
+        scene main {
+            let palette = Sequence.of(
+                red,
+                blue,
+                white
+            );
+
+            let first: Color = palette[0];
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("sequence program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    assert!(vm.is_finished());
+
+    let id = inception_vm::SequenceId(0);
+    assert_eq!(vm.sequences().length(id), Some(3));
+    assert_eq!(
+        vm.sequences().get(id, 0),
+        Ok(inception_vm::Value::Color(lux_bytecode::ColorValue {
+            r: 255,
+            g: 0,
+            b: 0
+        }))
+    );
+}
+
+/// `Sequence.length()`, taken through the same full pipeline.
+#[test]
+fn sequence_length_program_compiles_and_runs_to_completion() {
+    let source = r#"
+        import std.Sequence;
+
+        scene main {
+            let s = Sequence.of(1, 2, 3);
+            let n: Int = s.length();
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("sequence program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+
+    assert!(vm.is_finished());
+}
+
+/// An out-of-bounds index on a real, compiled `Sequence<T>` faults the VM
+/// with a structured error, never a panic (item 13/23 of the task brief).
+#[test]
+fn sequence_out_of_bounds_index_faults_the_vm_not_a_panic() {
+    let source = r#"
+        import std.Sequence;
+
+        scene main {
+            let s = Sequence.of(red, blue, white);
+            let bad: Color = s[3];
+        }
+    "#;
+
+    let module = lux_compiler::compile_portable(source).expect("sequence program should compile");
+
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let mut vm = Vm::new(module).unwrap();
+
+    vm.start().unwrap();
+    let err = vm
+        .run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .expect_err("out-of-bounds index should fault the VM, not panic");
+    assert!(matches!(
+        err.kind,
+        inception_vm::VmErrorKind::SequenceIndexOutOfBounds {
+            index: 3,
+            length: 3,
+            ..
+        }
+    ));
+    assert!(vm.is_faulted());
+}

@@ -150,6 +150,13 @@ pub enum MirInstruction {
         intrinsic: lux_stdlib::IntrinsicId,
         arg_count: u8,
     },
+    /// Pops an `Int` index, then a `Sequence<T>` receiver, and pushes the
+    /// element at that index — `<receiver>[<index>]`. Not modeled as a
+    /// `CallIntrinsic`: unlike every stdlib function, indexing has no
+    /// `std`-qualified name or `Signature` at all, it's pure language
+    /// syntax (like `Add`/`Sub`), so it gets its own opcode, mirroring
+    /// `lux_bytecode::Instruction::Index`.
+    Index,
 }
 
 /// A color value, normalized to RGB. `lux-hir`'s `ColorLiteral` can still

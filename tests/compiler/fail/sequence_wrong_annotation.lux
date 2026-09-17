@@ -1,0 +1,5 @@
+import std.Sequence;
+
+scene main {
+    let x: Sequence<Color> = Sequence.of(10%, 20%);
+}

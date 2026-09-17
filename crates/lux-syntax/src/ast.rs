@@ -181,6 +181,7 @@ pub enum Expression {
     Binary(BinaryExpr),
     Call(CallExpr),
     MethodCall(MethodCallExpr),
+    Index(IndexExpr),
     Grouped(Box<Expression>, Span),
 }
 
@@ -193,9 +194,20 @@ impl Expression {
             Expression::Binary(e) => e.span,
             Expression::Call(e) => e.span,
             Expression::MethodCall(e) => e.span,
+            Expression::Index(e) => e.span,
             Expression::Grouped(_, span) => *span,
         }
     }
+}
+
+/// `<receiver> [ <index> ]` — e.g. `palette[0]`. V1 only supports indexing
+/// a `Sequence<T>` with an `Int`, checked by `lux-typeck`; this node only
+/// records the syntax, same as [`CallExpr`]/[`MethodCallExpr`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexExpr {
+    pub receiver: Box<Expression>,
+    pub index: Box<Expression>,
+    pub span: Span,
 }
 
 /// `<receiver> . <method> ( <args> )` — e.g. `wave.range(0%, 100%)`, or

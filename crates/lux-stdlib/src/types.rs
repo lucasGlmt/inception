@@ -34,6 +34,15 @@ pub enum ParamType {
     SignalAngle,
     SignalIntensity,
     SignalColor,
+    /// `Sequence<T>` for each of the 5 `T`s above — used as
+    /// `Signature::return_ty` for `Sequence.of`'s 5 monomorphized
+    /// overloads, mirroring `SignalInt`/etc.'s docs above exactly (same
+    /// "flat variants over `Sequence(Box<ParamType>)`" reasoning).
+    SequenceInt,
+    SequenceFloat,
+    SequenceAngle,
+    SequenceIntensity,
+    SequenceColor,
     /// Not a real stdlib parameter type — no `Signature` in this registry
     /// ever declares a parameter or return type of `Unsupported`. It
     /// exists purely as a total target for callers (namely

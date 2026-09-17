@@ -1,0 +1,11 @@
+import std.Sequence;
+
+scene main {
+    let palette = Sequence.of(
+        red,
+        blue,
+        white
+    );
+
+    let first: Color = palette[0];
+}

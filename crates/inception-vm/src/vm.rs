@@ -19,6 +19,7 @@ use crate::binding::SignalBindingStore;
 use crate::error::{VmError, VmErrorKind, VmInitError};
 use crate::frame::Frame;
 use crate::intrinsic::eval_intrinsic;
+use crate::sequence::{SequenceError, SequenceStore};
 use crate::signal::{SignalError, SignalKind, SignalStore};
 use crate::state::VmState;
 use crate::value::Value;
@@ -65,6 +66,11 @@ pub struct Vm {
     /// `crate::binding`'s module doc): sampling a binding needs both the
     /// binding's `SignalId` and the `SignalStore` it points into.
     bindings: SignalBindingStore,
+    /// Every sequence created by this program's execution so far, via
+    /// `Sequence.of` (`SequenceOf*` intrinsics). Owned by this `Vm` and
+    /// never migrated, for the same reason `signals` isn't — see
+    /// `crate::sequence`'s module doc.
+    sequences: SequenceStore,
 }
 
 impl Vm {
@@ -93,6 +99,7 @@ impl Vm {
             call_stack: Vec::new(),
             signals: SignalStore::new(),
             bindings: SignalBindingStore::new(),
+            sequences: SequenceStore::new(),
         })
     }
 
@@ -121,6 +128,12 @@ impl Vm {
     /// tests/debugging only.
     pub fn signals(&self) -> &SignalStore {
         &self.signals
+    }
+
+    /// Every sequence created by this program's execution so far. For
+    /// tests/debugging only.
+    pub fn sequences(&self) -> &SequenceStore {
+        &self.sequences
     }
 
     /// Every `(fixture, attribute)` currently controlled by a live `<-`
@@ -299,6 +312,7 @@ impl Vm {
                 lighting,
                 transitions,
             ),
+            Instruction::Index => self.exec_index(function_id, pc),
         }
     }
 
@@ -665,10 +679,18 @@ impl Vm {
     /// (see that function's module doc); the `Effects*` constructors also
     /// need `clock.now()` for the oscillator's time origin — legitimate
     /// here even though sampling itself never reads a clock (see
-    /// `crate::signal`'s module doc). Every other intrinsic still goes
-    /// through `eval_intrinsic`, which stays total — there is no error
-    /// path for those, matching every other "deterministic runtime, no
-    /// panics" operation in this VM.
+    /// `crate::signal`'s module doc). The 5 `SequenceOf*` intrinsics are
+    /// handled here for the same reason (`self.sequences` is
+    /// `Vm`-owned mutable state), and are additionally the one *variadic*
+    /// case — `args` here is already exactly `arg_count` long, popped
+    /// generically below, so no special handling is needed for that past
+    /// this point. The 5 `SequenceLength*` intrinsics only need read
+    /// access to `self.sequences` but are handled here too, for symmetry
+    /// and because `eval_intrinsic` deliberately never touches `Vm` state
+    /// at all. Every other intrinsic still goes through `eval_intrinsic`,
+    /// which stays total — there is no error path for those, matching
+    /// every other "deterministic runtime, no panics" operation in this
+    /// VM.
     fn exec_call_intrinsic<C: Clock>(
         &mut self,
         function: FunctionId,
@@ -712,7 +734,55 @@ impl Vm {
             return Ok(Step::Continue);
         }
 
+        if let Some(elem) = sequence_element_of(intrinsic) {
+            let id = self.sequences.insert(args);
+            self.stack.push(Value::Sequence(elem, id));
+            return Ok(Step::Continue);
+        }
+
+        if sequence_length_of(intrinsic).is_some() {
+            let Value::Sequence(_, id) = args[0] else {
+                unreachable!(
+                    "exec_call_intrinsic: SequenceLength* receiver operand type already checked \
+                     by the verifier"
+                );
+            };
+            let length = self
+                .sequences
+                .length(id)
+                .ok_or_else(|| VmError::new(function, pc, VmErrorKind::UnknownSequence(id)))?;
+            self.stack.push(Value::Int(length as i64));
+            return Ok(Step::Continue);
+        }
+
         self.stack.push(eval_intrinsic(intrinsic, &args));
+        Ok(Step::Continue)
+    }
+
+    /// Pops an `Int` index, then a `Sequence<T>` receiver, and pushes the
+    /// element at that index — see `lux_bytecode::Instruction::Index`'s
+    /// docs. Out-of-bounds and unknown-sequence are both structured
+    /// `VmError`s, never a panic (item 13 of the task brief).
+    fn exec_index(&mut self, function: FunctionId, pc: usize) -> Result<Step, VmError> {
+        let index_value = self.pop(function, pc)?;
+        let Value::Int(index) = index_value else {
+            unreachable!(
+                "exec_index: index operand type already checked by the verifier \
+                 (found {index_value:?})"
+            );
+        };
+        let receiver = self.pop(function, pc)?;
+        let Value::Sequence(_, id) = receiver else {
+            unreachable!(
+                "exec_index: receiver operand type already checked by the verifier \
+                 (found {receiver:?})"
+            );
+        };
+        let value = self
+            .sequences
+            .get(id, index)
+            .map_err(|err| sequence_error(function, pc, err))?;
+        self.stack.push(value);
         Ok(Step::Continue)
     }
 
@@ -830,6 +900,39 @@ fn signal_element_of(
     }
 }
 
+/// The `ScalarValueType` a `SequenceOf*` intrinsic produces a sequence of,
+/// or `None` for every other (non-sequence-constructing) intrinsic.
+fn sequence_element_of(
+    intrinsic: lux_bytecode::IntrinsicId,
+) -> Option<lux_bytecode::ScalarValueType> {
+    use lux_bytecode::{IntrinsicId, ScalarValueType};
+    match intrinsic {
+        IntrinsicId::SequenceOfInt => Some(ScalarValueType::Int),
+        IntrinsicId::SequenceOfFloat => Some(ScalarValueType::Float),
+        IntrinsicId::SequenceOfAngle => Some(ScalarValueType::Angle),
+        IntrinsicId::SequenceOfIntensity => Some(ScalarValueType::Intensity),
+        IntrinsicId::SequenceOfColor => Some(ScalarValueType::Color),
+        _ => None,
+    }
+}
+
+/// Whether `intrinsic` is one of the 5 `SequenceLength*` variants — the
+/// element type itself is irrelevant to `.length()` (every `Sequence<T>`
+/// answers the same way), so this is a plain predicate rather than
+/// returning it, unlike `sequence_element_of`.
+fn sequence_length_of(intrinsic: lux_bytecode::IntrinsicId) -> Option<()> {
+    use lux_bytecode::IntrinsicId;
+    matches!(
+        intrinsic,
+        IntrinsicId::SequenceLengthInt
+            | IntrinsicId::SequenceLengthFloat
+            | IntrinsicId::SequenceLengthAngle
+            | IntrinsicId::SequenceLengthIntensity
+            | IntrinsicId::SequenceLengthColor
+    )
+    .then_some(())
+}
+
 /// The `SignalKind` constructor an `Effects*` intrinsic builds, or `None`
 /// for every other (non-oscillator-producing) intrinsic. Returned as a
 /// plain function pointer rather than inlining the four cases directly
@@ -880,6 +983,16 @@ fn signal_error(function: FunctionId, pc: usize, error: SignalError) -> VmError 
         SignalError::UnknownSignal(id) => VmErrorKind::UnknownSignal(id),
         SignalError::UnsupportedPhaseSource(id) => VmErrorKind::UnsupportedPhaseSource(id),
         SignalError::UnsupportedSpreadSource(id) => VmErrorKind::UnsupportedSpreadSource(id),
+    };
+    VmError::new(function, pc, kind)
+}
+
+fn sequence_error(function: FunctionId, pc: usize, error: SequenceError) -> VmError {
+    let kind = match error {
+        SequenceError::UnknownSequence(id) => VmErrorKind::UnknownSequence(id),
+        SequenceError::IndexOutOfBounds { id, index, length } => {
+            VmErrorKind::SequenceIndexOutOfBounds { id, index, length }
+        }
     };
     VmError::new(function, pc, kind)
 }

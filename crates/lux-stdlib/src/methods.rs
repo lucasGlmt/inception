@@ -186,6 +186,137 @@ pub fn resolve_signal_float_method(
     }
 }
 
+static SEQUENCE_LENGTH_INT: Signature = Signature {
+    module_path: &["Sequence<Int>"],
+    name: "length",
+    params: &[],
+    return_ty: ParamType::Int,
+    intrinsic: IntrinsicId::SequenceLengthInt,
+    pure: true,
+    doc: "length() -> Int — the number of elements in this `Sequence<T>`.",
+};
+
+static SEQUENCE_LENGTH_FLOAT: Signature = Signature {
+    module_path: &["Sequence<Float>"],
+    name: "length",
+    params: &[],
+    return_ty: ParamType::Int,
+    intrinsic: IntrinsicId::SequenceLengthFloat,
+    pure: true,
+    doc: "length() -> Int — the number of elements in this `Sequence<T>`.",
+};
+
+static SEQUENCE_LENGTH_ANGLE: Signature = Signature {
+    module_path: &["Sequence<Angle>"],
+    name: "length",
+    params: &[],
+    return_ty: ParamType::Int,
+    intrinsic: IntrinsicId::SequenceLengthAngle,
+    pure: true,
+    doc: "length() -> Int — the number of elements in this `Sequence<T>`.",
+};
+
+static SEQUENCE_LENGTH_INTENSITY: Signature = Signature {
+    module_path: &["Sequence<Intensity>"],
+    name: "length",
+    params: &[],
+    return_ty: ParamType::Int,
+    intrinsic: IntrinsicId::SequenceLengthIntensity,
+    pure: true,
+    doc: "length() -> Int — the number of elements in this `Sequence<T>`.",
+};
+
+static SEQUENCE_LENGTH_COLOR: Signature = Signature {
+    module_path: &["Sequence<Color>"],
+    name: "length",
+    params: &[],
+    return_ty: ParamType::Int,
+    intrinsic: IntrinsicId::SequenceLengthColor,
+    pure: true,
+    doc: "length() -> Int — the number of elements in this `Sequence<T>`.",
+};
+
+/// Every builtin method on a `Sequence<T>` receiver tagged `receiver` (one
+/// of the 5 `ParamType::Sequence*` variants — see
+/// `lux_typeck::stdlib_bridge::sequence_element_param_type`, the only
+/// producer of this tag). `V1` has exactly one such method (`.length()`),
+/// monomorphized per element type like `SEQUENCE_OF_*` in `crate::registry`
+/// — kept as its own small table (mirroring `SIGNAL_FLOAT_METHODS`'s
+/// module doc: a method call has no import-qualified module, its
+/// "namespace" is the receiver's type) rather than folded into
+/// `SIGNAL_FLOAT_METHODS`, since the receiver here isn't always the same
+/// type.
+fn sequence_methods_for(receiver: ParamType) -> &'static [Signature] {
+    match receiver {
+        ParamType::SequenceInt => std::slice::from_ref(&SEQUENCE_LENGTH_INT),
+        ParamType::SequenceFloat => std::slice::from_ref(&SEQUENCE_LENGTH_FLOAT),
+        ParamType::SequenceAngle => std::slice::from_ref(&SEQUENCE_LENGTH_ANGLE),
+        ParamType::SequenceIntensity => std::slice::from_ref(&SEQUENCE_LENGTH_INTENSITY),
+        ParamType::SequenceColor => std::slice::from_ref(&SEQUENCE_LENGTH_COLOR),
+        _ => &[],
+    }
+}
+
+/// Every overload named `name` on a `Sequence<T>` receiver tagged
+/// `receiver` — the `Sequence` counterpart to
+/// [`signal_float_method_candidates`]. `V1` never has more than one
+/// overload per name, but this still returns a slice (not `Option`) to
+/// keep the same shape LSP signature-help expects from every other
+/// `*_candidates` function.
+pub fn sequence_method_candidates(receiver: ParamType, name: &str) -> &'static [Signature] {
+    let methods = sequence_methods_for(receiver);
+    let Some(start) = methods.iter().position(|s| s.name == name) else {
+        return &[];
+    };
+    let len = methods[start..]
+        .iter()
+        .take_while(|s| s.name == name)
+        .count();
+    &methods[start..start + len]
+}
+
+/// Resolves `.name(arg_types)` on a `Sequence<T>` receiver tagged
+/// `receiver` to the one matching [`Signature`] — the `Sequence`
+/// counterpart to [`resolve_signal_float_method`].
+pub fn resolve_sequence_method(
+    receiver: ParamType,
+    name: &str,
+    arg_types: &[ParamType],
+) -> Result<&'static Signature, OverloadError> {
+    if sequence_methods_for(receiver).is_empty() {
+        return Err(OverloadError::UnknownModule);
+    }
+    let by_name = sequence_method_candidates(receiver, name);
+    if by_name.is_empty() {
+        return Err(OverloadError::UnknownMember);
+    }
+    let exact: Vec<&'static Signature> = by_name
+        .iter()
+        .filter(|sig| sig.params.len() == arg_types.len())
+        .filter(|sig| {
+            sig.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|(p, a)| p.ty == *a)
+        })
+        .collect();
+    match exact.len() {
+        0 => {
+            let arities: Vec<usize> = by_name.iter().map(Signature::arity).collect();
+            if arities.contains(&arg_types.len()) {
+                Err(OverloadError::NoMatchingOverload)
+            } else {
+                Err(OverloadError::ArityMismatch {
+                    expected_arities: arities,
+                    found: arg_types.len(),
+                })
+            }
+        }
+        1 => Ok(exact[0]),
+        _ => Err(OverloadError::Ambiguous(exact)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +406,51 @@ mod tests {
         assert_eq!(signal_float_method_candidates("phase").len(), 1);
         assert_eq!(signal_float_method_candidates("spread").len(), 1);
         assert_eq!(signal_float_method_candidates("bogus").len(), 0);
+    }
+
+    #[test]
+    fn sequence_length_resolves_per_element_type() {
+        let cases = [
+            (ParamType::SequenceInt, IntrinsicId::SequenceLengthInt),
+            (ParamType::SequenceFloat, IntrinsicId::SequenceLengthFloat),
+            (ParamType::SequenceAngle, IntrinsicId::SequenceLengthAngle),
+            (
+                ParamType::SequenceIntensity,
+                IntrinsicId::SequenceLengthIntensity,
+            ),
+            (ParamType::SequenceColor, IntrinsicId::SequenceLengthColor),
+        ];
+        for (receiver, intrinsic) in cases {
+            let sig = resolve_sequence_method(receiver, "length", &[]).unwrap();
+            assert_eq!(sig.intrinsic, intrinsic);
+            assert_eq!(sig.return_ty, ParamType::Int);
+        }
+    }
+
+    #[test]
+    fn sequence_length_rejects_arguments() {
+        assert_eq!(
+            resolve_sequence_method(ParamType::SequenceColor, "length", &[ParamType::Int]),
+            Err(OverloadError::ArityMismatch {
+                expected_arities: vec![0],
+                found: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn sequence_unknown_method_is_reported() {
+        assert_eq!(
+            resolve_sequence_method(ParamType::SequenceColor, "bogus", &[]),
+            Err(OverloadError::UnknownMember)
+        );
+    }
+
+    #[test]
+    fn non_sequence_receiver_is_unknown_module() {
+        assert_eq!(
+            resolve_sequence_method(ParamType::Int, "length", &[]),
+            Err(OverloadError::UnknownModule)
+        );
     }
 }

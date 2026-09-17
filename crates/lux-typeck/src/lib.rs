@@ -32,4 +32,4 @@ pub use expected::ExpectedType;
 pub use infer::expr_type;
 pub use program::{TypedProgram, TypedScene};
 pub use rules::literal_type;
-pub use types::{SignalElement, Type, resolve_annotation};
+pub use types::{SequenceElement, SignalElement, Type, resolve_annotation};

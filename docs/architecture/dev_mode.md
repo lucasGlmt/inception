@@ -18,8 +18,8 @@ name = "demo-show"
 entry = "src/main.lux"
 
 [rig]
-patch = "rig/patch.lux"
-bindings = "rig/rig.lux"
+patch = "rig/patch.toml"
+bindings = "rig/rig.toml"
 
 [fixtures]
 directory = "fixtures"
@@ -33,9 +33,11 @@ driver = "null" # null, recording/dev, or dmx/enttec
 # universe = 1
 ```
 
-`rig.patch` and `rig.bindings` contain TOML configuration in V1, despite the
-`.lux` extension used by the current project convention. A patch contains a
-`[patch]` table and zero or more `[[fixtures]]` entries. A binding file has a
+`rig.patch` and `rig.bindings` contain TOML configuration and use the `.toml`
+extension accordingly (any filename works — `lux-project` parses them as TOML
+regardless — but `.toml` is what `lux new` scaffolds and what editor tooling
+expects). A patch contains a `[patch]` table and zero or more `[[fixtures]]`
+entries. A binding file has a
 `[rig]` table and zero or more `[[bindings]]` entries. Fixture definitions are
 individual `*.toml` files under `fixtures.directory`:
 

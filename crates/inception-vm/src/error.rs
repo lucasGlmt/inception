@@ -110,4 +110,18 @@ pub enum VmErrorKind {
     /// docs), kept only for the same defensive reason every other
     /// `VmErrorKind` exists.
     UnsupportedSpreadSource(crate::signal::SignalId),
+    /// An `Index` operand referenced a `SequenceId` this `Vm`'s
+    /// `SequenceStore` doesn't know about — unreachable for a verified
+    /// module (every `Sequence` value on the stack was produced by this
+    /// same `Vm`'s own `SequenceOf*` handling), kept only for the same
+    /// defensive reason every other `VmErrorKind` exists.
+    UnknownSequence(crate::sequence::SequenceId),
+    /// `Index`'s popped index was outside `0..length` for the sequence it
+    /// indexed into — see item 13 of the `Sequence<T>` task brief: never a
+    /// panic, always this structured error.
+    SequenceIndexOutOfBounds {
+        id: crate::sequence::SequenceId,
+        index: i64,
+        length: usize,
+    },
 }

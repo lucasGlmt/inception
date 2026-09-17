@@ -257,3 +257,80 @@ fn unresolved_user_module_is_a_resolution_error() {
             .any(|e| e.message.contains("unknown module `show.Helpers`"))
     );
 }
+
+#[test]
+fn resolves_sequence_of_call() {
+    let file = lower_ok(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(1, 2, 3);
+        }
+        "#,
+    );
+    let scene = &file.scenes[0];
+    match &scene.statements[0] {
+        HirStatement::Let(let_stmt) => match &let_stmt.value {
+            HirExpr::Call(call) => {
+                let HirCallee::Std {
+                    module_path, name, ..
+                } = &call.callee;
+                assert_eq!(*module_path, &["std", "Sequence"]);
+                assert_eq!(name, "of");
+                assert_eq!(call.args.len(), 3);
+            }
+            other => panic!("expected a Call, got {other:?}"),
+        },
+        other => panic!("expected a Let statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolves_index_expression() {
+    let file = lower_ok(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(1, 2);
+            let first = s[0];
+        }
+        "#,
+    );
+    let scene = &file.scenes[0];
+    match &scene.statements[1] {
+        HirStatement::Let(let_stmt) => match &let_stmt.value {
+            HirExpr::Index {
+                receiver, index, ..
+            } => {
+                assert!(matches!(**receiver, HirExpr::Local(LocalId(0), _)));
+                assert!(matches!(**index, HirExpr::Literal(Literal::Int(0), _)));
+            }
+            other => panic!("expected an Index expression, got {other:?}"),
+        },
+        other => panic!("expected a Let statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolves_sequence_length_method_call() {
+    let file = lower_ok(
+        r#"
+        import std.Sequence;
+        scene main {
+            let s = Sequence.of(1, 2);
+            let n = s.length();
+        }
+        "#,
+    );
+    let scene = &file.scenes[0];
+    match &scene.statements[1] {
+        HirStatement::Let(let_stmt) => match &let_stmt.value {
+            HirExpr::MethodCall { method, args, .. } => {
+                assert_eq!(method, "length");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected a MethodCall, got {other:?}"),
+        },
+        other => panic!("expected a Let statement, got {other:?}"),
+    }
+}

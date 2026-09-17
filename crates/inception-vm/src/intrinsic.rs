@@ -137,6 +137,26 @@ pub fn eval_intrinsic(intrinsic: IntrinsicId, args: &[Value]) -> Value {
              Vm::exec_call_intrinsic directly, which needs mutable access to the \
              SignalStore this pure function doesn't have — see this module's doc"
         ),
+
+        IntrinsicId::SequenceOfInt
+        | IntrinsicId::SequenceOfFloat
+        | IntrinsicId::SequenceOfAngle
+        | IntrinsicId::SequenceOfIntensity
+        | IntrinsicId::SequenceOfColor => unreachable!(
+            "eval_intrinsic: SequenceOf* intrinsics are handled by Vm::exec_call_intrinsic \
+             directly, which needs mutable access to the SequenceStore this pure function \
+             doesn't have — see this module's doc"
+        ),
+
+        IntrinsicId::SequenceLengthInt
+        | IntrinsicId::SequenceLengthFloat
+        | IntrinsicId::SequenceLengthAngle
+        | IntrinsicId::SequenceLengthIntensity
+        | IntrinsicId::SequenceLengthColor => unreachable!(
+            "eval_intrinsic: SequenceLength* intrinsics are handled by Vm::exec_call_intrinsic \
+             directly, which needs (read-only) access to the SequenceStore this pure function \
+             doesn't have — see this module's doc"
+        ),
     }
 }
 

@@ -336,7 +336,100 @@ static EFFECTS: StdModule = StdModule {
           captures the current runtime clock as the oscillator's time origin.",
 };
 
-pub static STD_MODULES: &[StdModule] = &[MATH, COLOR, SIGNAL, EFFECTS];
+static SEQUENCE_OF_INT: Signature = Signature {
+    module_path: &["std", "Sequence"],
+    name: "of",
+    // `Sequence.of` is genuinely variadic (one or more same-typed
+    // arguments) — no fixed `params` slice can describe that, so this
+    // lists a single representative element for LSP signature help/hover
+    // (`param_type_name`/`signature_label`) while the real arity/
+    // homogeneity check happens outside `resolve_overload`, in
+    // `lux-typeck`'s `Checker::check_call` (see that method's docs) and
+    // is re-derived, trusted, by `lux_typeck::infer::resolve_call`. Real
+    // calls are never resolved through `resolve_overload`/`candidates`'
+    // arity matching for this one function name — only member-existence
+    // (`candidates(...).is_empty()`) and LSP tooling ever consult this
+    // `Signature` directly.
+    params: &[param!("values": Int)],
+    return_ty: ParamType::SequenceInt,
+    intrinsic: IntrinsicId::SequenceOfInt,
+    pure: true,
+    doc: "of<T>(values: T...) -> Sequence<T> — builds an immutable, ordered `Sequence<T>` from \
+          one or more values, e.g. `Sequence.of(1, 2, 3) -> Sequence<Int>`. Every value must have \
+          the same type; `Sequence.of()` is a compile-time error (the element type can't be \
+          inferred).",
+};
+
+static SEQUENCE_OF_FLOAT: Signature = Signature {
+    module_path: &["std", "Sequence"],
+    name: "of",
+    params: &[param!("values": Float)],
+    return_ty: ParamType::SequenceFloat,
+    intrinsic: IntrinsicId::SequenceOfFloat,
+    pure: true,
+    doc: "of<T>(values: T...) -> Sequence<T> — builds an immutable, ordered `Sequence<T>` from \
+          one or more values, e.g. `Sequence.of(1.0, 2.5) -> Sequence<Float>`. Every value must \
+          have the same type; `Sequence.of()` is a compile-time error (the element type can't be \
+          inferred).",
+};
+
+static SEQUENCE_OF_ANGLE: Signature = Signature {
+    module_path: &["std", "Sequence"],
+    name: "of",
+    params: &[param!("values": Angle)],
+    return_ty: ParamType::SequenceAngle,
+    intrinsic: IntrinsicId::SequenceOfAngle,
+    pure: true,
+    doc: "of<T>(values: T...) -> Sequence<T> — builds an immutable, ordered `Sequence<T>` from \
+          one or more values, e.g. `Sequence.of(0deg, 90deg, 180deg) -> Sequence<Angle>`. Every \
+          value must have the same type; `Sequence.of()` is a compile-time error (the element \
+          type can't be inferred).",
+};
+
+static SEQUENCE_OF_INTENSITY: Signature = Signature {
+    module_path: &["std", "Sequence"],
+    name: "of",
+    params: &[param!("values": Intensity)],
+    return_ty: ParamType::SequenceIntensity,
+    intrinsic: IntrinsicId::SequenceOfIntensity,
+    pure: true,
+    doc: "of<T>(values: T...) -> Sequence<T> — builds an immutable, ordered `Sequence<T>` from \
+          one or more values, e.g. `Sequence.of(10%, 50%, 100%) -> Sequence<Intensity>`. Every \
+          value must have the same type; `Sequence.of()` is a compile-time error (the element \
+          type can't be inferred).",
+};
+
+static SEQUENCE_OF_COLOR: Signature = Signature {
+    module_path: &["std", "Sequence"],
+    name: "of",
+    params: &[param!("values": Color)],
+    return_ty: ParamType::SequenceColor,
+    intrinsic: IntrinsicId::SequenceOfColor,
+    pure: true,
+    doc: "of<T>(values: T...) -> Sequence<T> — builds an immutable, ordered `Sequence<T>` from \
+          one or more values, e.g. `Sequence.of(red, blue, white) -> Sequence<Color>`. Every \
+          value must have the same type; `Sequence.of()` is a compile-time error (the element \
+          type can't be inferred).",
+};
+
+static SEQUENCE_FUNCTIONS: &[Signature] = &[
+    SEQUENCE_OF_INT,
+    SEQUENCE_OF_FLOAT,
+    SEQUENCE_OF_ANGLE,
+    SEQUENCE_OF_INTENSITY,
+    SEQUENCE_OF_COLOR,
+];
+
+static SEQUENCE: StdModule = StdModule {
+    path: &["std", "Sequence"],
+    short_name: "Sequence",
+    functions: SEQUENCE_FUNCTIONS,
+    doc: "An immutable, ordered collection of same-typed values: `Sequence<T>`. Built with \
+          `Sequence.of(...)`; read with `.length()` and `[index]`. No `push`/`pop`/mutation, no \
+          slicing, no iterators in V1 — see `AGENTS.md`.",
+};
+
+pub static STD_MODULES: &[StdModule] = &[MATH, COLOR, SIGNAL, EFFECTS, SEQUENCE];
 
 pub fn find_module(path: &[&str]) -> Option<&'static StdModule> {
     STD_MODULES.iter().find(|m| m.path == path)

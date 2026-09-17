@@ -320,8 +320,8 @@ name = "{name}"
 entry = "src/main.lux"
 
 [rig]
-patch = "rig/patch.lux"
-bindings = "rig/rig.lux"
+patch = "rig/patch.toml"
+bindings = "rig/rig.toml"
 
 [fixtures]
 directory = "fixtures"
@@ -338,9 +338,9 @@ driver = "null"
         root.join("src/main.lux"),
         "rig contract EmptyRig {\n}\n\nscene main {\n}\n",
     )?;
-    fs::write(root.join("rig/patch.lux"), "[patch]\nname = \"Empty\"\n")?;
+    fs::write(root.join("rig/patch.toml"), "[patch]\nname = \"Empty\"\n")?;
     fs::write(
-        root.join("rig/rig.lux"),
+        root.join("rig/rig.toml"),
         "[rig]\nname = \"EmptyRigBinding\"\ncontract = \"EmptyRig\"\n",
     )?;
     println!("Created Lux project `{name}` at {}", root.display());

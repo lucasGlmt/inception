@@ -1360,3 +1360,175 @@ fn chained_phase_calls_flatten_onto_the_same_base_oscillator() {
         })
     );
 }
+
+#[test]
+fn sequence_of_pushes_a_sequence_with_the_given_elements() {
+    // CONST 1; CONST 2; CONST 3; CALL_INTRINSIC SequenceOfInt(3); POP; RETURN
+    let module = module_with(
+        vec![Constant::Int(1), Constant::Int(2), Constant::Int(3)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::Const(ConstantId(1)),
+                Instruction::Const(ConstantId(2)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 3,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            3,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    let id = crate::sequence::SequenceId(0);
+    assert_eq!(vm.sequences().length(id), Some(3));
+    assert_eq!(vm.sequences().get(id, 0), Ok(Value::Int(1)));
+    assert_eq!(vm.sequences().get(id, 1), Ok(Value::Int(2)));
+    assert_eq!(vm.sequences().get(id, 2), Ok(Value::Int(3)));
+}
+
+#[test]
+fn sequence_length_reads_the_element_count() {
+    // CONST 1; CONST 2; CALL_INTRINSIC SequenceOfInt(2);
+    // CALL_INTRINSIC SequenceLengthInt(1); STORE_LOCAL 0; LOAD_LOCAL 0;
+    // CONST Duration(1s); WAIT; POP; RETURN
+    let module = module_with(
+        vec![
+            Constant::Int(1),
+            Constant::Int(2),
+            Constant::Duration(1_000_000_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::Const(ConstantId(1)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 2,
+                },
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceLengthInt,
+                    arg_count: 1,
+                },
+                Instruction::StoreLocal(LocalId(0)),
+                Instruction::LoadLocal(LocalId(0)),
+                Instruction::Const(ConstantId(2)),
+                Instruction::Wait,
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![ValueType::Int],
+            2,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+    assert_eq!(vm.stack(), &[Value::Int(2)]);
+}
+
+#[test]
+fn indexing_a_sequence_pushes_the_element_at_that_index() {
+    // CONST 10; CONST 20; CONST 30; CALL_INTRINSIC SequenceOfInt(3);
+    // CONST 1 (index); INDEX; STORE_LOCAL 0; LOAD_LOCAL 0; CONST Duration(1s);
+    // WAIT; POP; RETURN
+    //
+    // Same "leave the value under a blocking WAIT's duration" technique as
+    // `const_and_local_round_trip_the_correct_value`: once WAIT pops the
+    // duration, exactly the indexed value is left on the stack to inspect.
+    let module = module_with(
+        vec![
+            Constant::Int(10),
+            Constant::Int(20),
+            Constant::Int(30),
+            Constant::Int(1),
+            Constant::Duration(1_000_000_000),
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::Const(ConstantId(1)),
+                Instruction::Const(ConstantId(2)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 3,
+                },
+                Instruction::Const(ConstantId(3)),
+                Instruction::Index,
+                Instruction::StoreLocal(LocalId(0)),
+                Instruction::LoadLocal(LocalId(0)),
+                Instruction::Const(ConstantId(4)),
+                Instruction::Wait,
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![ValueType::Int],
+            3,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_waiting());
+    assert_eq!(vm.stack(), &[Value::Int(20)]);
+}
+
+#[test]
+fn indexing_out_of_bounds_faults_with_a_structured_error_not_a_panic() {
+    // CONST 1; CALL_INTRINSIC SequenceOfInt(1); CONST 5 (index); INDEX; POP; RETURN
+    let module = module_with(
+        vec![Constant::Int(1), Constant::Int(5)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SequenceOfInt,
+                    arg_count: 1,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::Index,
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            2,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    let err = vm
+        .run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap_err();
+    assert_eq!(
+        err.kind,
+        VmErrorKind::SequenceIndexOutOfBounds {
+            id: crate::sequence::SequenceId(0),
+            index: 5,
+            length: 1,
+        }
+    );
+    assert!(vm.is_faulted());
+}

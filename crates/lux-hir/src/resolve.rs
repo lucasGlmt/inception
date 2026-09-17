@@ -558,7 +558,22 @@ impl Lowering<'_> {
             Expression::Grouped(inner, _) => self.resolve_expr(scope, inner),
             Expression::Call(call) => self.resolve_call(scope, call),
             Expression::MethodCall(method_call) => self.resolve_method_call(scope, method_call),
+            Expression::Index(index_expr) => self.resolve_index(scope, index_expr),
         }
+    }
+
+    /// Resolves `<receiver>[<index>]`. Both sides are resolved
+    /// independently (like `Binary`) so an error in one doesn't hide an
+    /// error in the other; whether `receiver` is actually indexable (a
+    /// `Sequence<T>`) and `index` is an `Int` is `lux-typeck`'s job.
+    fn resolve_index(&mut self, scope: &Scope, index_expr: &ast::IndexExpr) -> Option<HirExpr> {
+        let receiver = self.resolve_expr(scope, &index_expr.receiver);
+        let index = self.resolve_expr(scope, &index_expr.index);
+        Some(HirExpr::Index {
+            receiver: Box::new(receiver?),
+            index: Box::new(index?),
+            span: index_expr.span,
+        })
     }
 
     /// Resolves a genuine chained method call (`ast::MethodCallExpr`) —

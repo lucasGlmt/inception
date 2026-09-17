@@ -216,6 +216,13 @@ fn lower_expr(expr: &HirExpr, local_types: &[Type], out: &mut Vec<MirInstruction
                 arg_count: (1 + args.len()) as u8,
             });
         }
+        HirExpr::Index {
+            receiver, index, ..
+        } => {
+            lower_expr(receiver, local_types, out);
+            lower_expr(index, local_types, out);
+            out.push(MirInstruction::Index);
+        }
     }
 }
 

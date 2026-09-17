@@ -106,6 +106,9 @@ fn write_instruction(out: &mut String, module: &BytecodeModule, instruction: Ins
         Instruction::BindSignal { target, attribute } => {
             let _ = write!(out, "{:<11} #{} {attribute:?}", "BIND_SIGNAL", target.0);
         }
+        Instruction::Index => {
+            let _ = write!(out, "INDEX");
+        }
     }
 }
 
