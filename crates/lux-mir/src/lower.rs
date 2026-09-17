@@ -195,6 +195,27 @@ fn lower_expr(expr: &HirExpr, local_types: &[Type], out: &mut Vec<MirInstruction
                 arg_count: call.args.len() as u8,
             });
         }
+        HirExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
+            // The receiver is pushed first, then arguments left to right —
+            // it's simply operand 0 of the intrinsic call from here on
+            // (see `lux_bytecode::IntrinsicId::param_types` for
+            // `SignalRange*`/`SignalPhase`/`SignalSpread`/`SignalInvert`,
+            // which list it first for exactly this reason).
+            lower_expr(receiver, local_types, out);
+            for arg in args {
+                lower_expr(arg, local_types, out);
+            }
+            let sig = lux_typeck::infer::resolve_method_call(local_types, receiver, method, args);
+            out.push(MirInstruction::CallIntrinsic {
+                intrinsic: sig.intrinsic,
+                arg_count: (1 + args.len()) as u8,
+            });
+        }
     }
 }
 

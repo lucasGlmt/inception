@@ -23,7 +23,7 @@ mod tests;
 
 pub use binding::{ActiveSignalBinding, SignalBindingStore};
 pub use error::{VmError, VmErrorKind, VmInitError};
-pub use signal::{SignalError, SignalId, SignalKind, SignalStore};
+pub use signal::{SignalError, SignalId, SignalKind, SignalSampleContext, SignalStore};
 pub use state::VmState;
 pub use value::Value;
 pub use vm::Vm;

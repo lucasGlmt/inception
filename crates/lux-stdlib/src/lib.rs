@@ -10,11 +10,15 @@
 //! `inception-vm` deliberately do **not** (see `intrinsic` module doc).
 
 mod intrinsic;
+mod methods;
 mod registry;
 mod signature;
 mod types;
 
 pub use intrinsic::IntrinsicId;
+pub use methods::{
+    SIGNAL_FLOAT_METHODS, resolve_signal_float_method, signal_float_method_candidates,
+};
 pub use registry::{
     OverloadError, candidates, find_module, find_module_by_short_name, resolve_overload,
 };

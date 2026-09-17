@@ -128,27 +128,53 @@ frame-over-frame — so a missed frame (e.g. jumping straight from `t=0`
 to `t=1750ms`) always produces the mathematically correct value, with no
 drift and no dependency on how many previous samples happened.
 
+## Composing signals: `.range()`, `.phase()`, `.spread()`, `.invert()`
+
+An oscillator's `Signal<Float>` can be transformed with method-call
+syntax — `.range()` is what makes binding one to a lighting attribute
+possible:
+
+```lux
+import std.Effects;
+
+scene main {
+    Front.intensity <-
+        Effects.sine(2s).range(5%, 100%);
+}
+```
+
+`.spread(amount)` is what makes that binding render a spatial wave across
+`Front`'s fixtures instead of one shared pulse — each fixture gets its
+own slice of `amount` added to its phase, based on its position in the
+rig-resolved fixture list:
+
+```lux
+import std.Effects;
+
+scene main {
+    Front.intensity <-
+        Effects.sine(2s)
+            .spread(360deg)
+            .range(5%, 100%);
+}
+```
+
+See `docs/language/signals.md`'s "Signal composition" section for the
+full reference (`.range()`'s exact formula and type rules, `.phase()`'s
+oscillator-only restriction, `.spread()`'s offset formula and
+`SignalSampleContext`, `.invert()`) and
+`docs/rfcs/0004-effects-oscillators.md`/`docs/rfcs/0006-signal-spread.md`
+for the design rationale.
+
 ## What's not here yet
 
-- `.range(min, max)`, to remap `Signal<Float>` into `Signal<Intensity>`
-  (or any other element type) — without it, an oscillator's `Signal<Float>`
-  **cannot** be bound directly to a lighting attribute:
-
-  ```lux
-  import std.Effects;
-
-  scene main {
-      // error: expected Signal<Intensity>, found Signal<Float>
-      Front.intensity <- Effects.sine(2s);
-  }
-  ```
-
-  This is deliberate: `.range()` is how a future milestone will make
-  that binding possible, and skipping it now keeps that transformation
-  from being silently baked into `<-` itself.
-- `.phase(offset)`, `.speed(factor)`, or any other transformation.
-- Signal arithmetic (`wave * 2.0`, `wave + 0.5`) or composition (`map`,
-  blending two signals).
-- Per-fixture spread — not applicable yet, since no oscillator can bind
-  to an attribute at all without `.range()`.
+- `.speed(factor)`, or any transformation beyond `.range()`/`.phase()`/
+  `.spread()`/`.invert()`.
+- Signal arithmetic (`wave * 2.0`, `wave + 0.5`) or composition beyond
+  method chaining (`map`, blending two signals, `zip`/`combine`/`fold`).
+- `.range()` for `Color` — RGB/HSV/linear-light interpolation each mean
+  something different, and this milestone doesn't pick one.
+- `.spread()` is index-based only — no 2D/3D physical-position spread, no
+  coordinate-based fixture selection, no reverse/custom group-ordering
+  DSL, no random spread.
 - Tempo/BPM-relative periods, easing curves, random/noise signals.

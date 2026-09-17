@@ -501,8 +501,60 @@ impl Parser {
                 span,
             })
         } else {
-            self.parse_primary_expression()
+            self.parse_postfix_expression()
         }
+    }
+
+    /// Parses a primary expression, then any number of chained
+    /// `.method(args)` suffixes — e.g. `Effects.sine(2s).phase(90deg).range(5%, 100%)`.
+    /// The single-level `Ident . Ident (` case (`Effects.sine(...)`,
+    /// `wave.range(...)`) is already fully consumed by
+    /// `parse_primary_expression`'s own qualified-call handling — this
+    /// loop only ever fires for a *further* `.method(...)` chained after
+    /// whatever that returned, which can't be a bare identifier anymore
+    /// (it's already a `Call`/`MethodCall`/... at that point), so there is
+    /// no ambiguity between the two.
+    fn parse_postfix_expression(&mut self) -> Expression {
+        let mut expr = self.parse_primary_expression();
+        loop {
+            if self.check(TokenKind::Dot)
+                && matches!(self.peek_nth_kind(1), TokenKind::Ident(_))
+                && *self.peek_nth_kind(2) == TokenKind::LParen
+            {
+                self.advance(); // `.`
+                let method = self.expect_identifier("expected method name after `.`");
+                expr = self.parse_method_call(expr, method);
+            } else {
+                break;
+            }
+        }
+        expr
+    }
+
+    fn parse_method_call(&mut self, receiver: Expression, method: Identifier) -> Expression {
+        let lparen = self.advance(); // `(`
+        let mut args = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                args.push(self.parse_expression());
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RParen, "expected `)` after method arguments");
+        let end = close
+            .map(|t| t.span.end)
+            .unwrap_or_else(|| args.last().map(|a| a.span().end).unwrap_or(lparen.span.end));
+        let span = Span::new(receiver.span().start, end);
+        Expression::MethodCall(MethodCallExpr {
+            receiver: Box::new(receiver),
+            method,
+            args,
+            span,
+        })
     }
 
     fn parse_primary_expression(&mut self) -> Expression {
@@ -872,6 +924,91 @@ mod tests {
         assert_eq!(call.args.len(), 1);
     }
 
+    /// `wave.range(...)` — a bare identifier receiver still parses as a
+    /// `CallExpr` (identical shape to `Math.sin(...)`), since the parser
+    /// can't tell "a local variable" from "a module qualifier" apart —
+    /// that distinction is `lux-hir`'s job.
+    #[test]
+    fn single_level_method_call_on_identifier_parses_as_call_expr() {
+        let src = "scene main { let x = wave.range(0%, 100%); }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Call(call) = &let_stmt.value else {
+            panic!("expected call expression, got {:?}", let_stmt.value);
+        };
+        assert_eq!(call.callee.qualifier.as_ref().unwrap().name, "wave");
+        assert_eq!(call.callee.name.name, "range");
+        assert_eq!(call.args.len(), 2);
+    }
+
+    #[test]
+    fn chained_method_calls_produce_nested_method_call_expressions() {
+        let src = "scene main { let x = Effects.sine(2s).phase(90deg).range(5%, 100%); }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::MethodCall(range_call) = &let_stmt.value else {
+            panic!("expected outer method call, got {:?}", let_stmt.value);
+        };
+        assert_eq!(range_call.method.name, "range");
+        assert_eq!(range_call.args.len(), 2);
+
+        let Expression::MethodCall(phase_call) = range_call.receiver.as_ref() else {
+            panic!("expected nested method call, got {:?}", range_call.receiver);
+        };
+        assert_eq!(phase_call.method.name, "phase");
+        assert_eq!(phase_call.args.len(), 1);
+
+        let Expression::Call(sine_call) = phase_call.receiver.as_ref() else {
+            panic!(
+                "expected innermost qualified call, got {:?}",
+                phase_call.receiver
+            );
+        };
+        assert_eq!(sine_call.callee.qualifier.as_ref().unwrap().name, "Effects");
+        assert_eq!(sine_call.callee.name.name, "sine");
+    }
+
+    #[test]
+    fn method_call_with_no_arguments_parses() {
+        let src = "scene main { let x = wave.invert(); }";
+        let file = parse(src).expect("should parse");
+        let Item::Scene(scene) = &file.items[0] else {
+            panic!("expected scene")
+        };
+        let Statement::Let(let_stmt) = &scene.body.statements[0] else {
+            panic!("expected let statement");
+        };
+        let Expression::Call(call) = &let_stmt.value else {
+            panic!("expected call expression, got {:?}", let_stmt.value);
+        };
+        assert_eq!(call.callee.name.name, "invert");
+        assert!(call.args.is_empty());
+    }
+
+    #[test]
+    fn malformed_method_calls_report_syntax_errors_without_panicking() {
+        for source in [
+            "scene main { let x = wave.phase(90deg).range(5%; }",
+            "scene main { let x = wave.phase(90deg).range(; }",
+            "scene main { let x = wave.phase(90deg).; }",
+        ] {
+            assert!(
+                parse(source).is_err(),
+                "source unexpectedly parsed: {source}"
+            );
+        }
+    }
+
     #[test]
     fn wildcard_import_is_a_syntax_error() {
         assert!(parse("import std.Math.*;").is_err());
@@ -1097,6 +1234,9 @@ mod tests {
             "scene main { Washes.intensity <- ",
             "scene main { Washes.intensity <- sig",
             "scene main { Washes.intensity < -sig; }",
+            "scene main { let x = wave.; }",
+            "scene main { let x = wave.range(; }",
+            "scene main { let x = wave.range(0%,; }",
         ];
         for input in inputs {
             let _ = parse(input); // must not panic

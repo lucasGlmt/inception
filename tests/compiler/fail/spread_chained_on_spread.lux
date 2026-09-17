@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    let bad = Effects.sine(2s).spread(180deg).spread(180deg);
+}

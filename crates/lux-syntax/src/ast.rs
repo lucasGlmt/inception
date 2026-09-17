@@ -180,6 +180,7 @@ pub enum Expression {
     Unary(UnaryExpr),
     Binary(BinaryExpr),
     Call(CallExpr),
+    MethodCall(MethodCallExpr),
     Grouped(Box<Expression>, Span),
 }
 
@@ -191,9 +192,31 @@ impl Expression {
             Expression::Unary(e) => e.span,
             Expression::Binary(e) => e.span,
             Expression::Call(e) => e.span,
+            Expression::MethodCall(e) => e.span,
             Expression::Grouped(_, span) => *span,
         }
     }
+}
+
+/// `<receiver> . <method> ( <args> )` — e.g. `wave.range(0%, 100%)`, or
+/// `Effects.sine(2s).phase(90deg)` where `receiver` is itself a `Call`.
+///
+/// Distinct from [`CallExpr`] (a qualified stdlib call, `Module.function(...)`):
+/// the parser can't tell `wave.range(...)` (`wave` a local) apart from
+/// `Effects.sine(...)` (`Effects` a module) when the receiver is a bare
+/// identifier — both still parse as [`CallExpr`] via [`CallPath::qualifier`]
+/// (unchanged) — so this node only ever appears for a receiver that is
+/// *not* a bare identifier already fully consumed that way, i.e. for
+/// chained/nested method calls. `lux-hir` is what actually distinguishes
+/// "qualifier is an imported module" from "qualifier is a local variable"
+/// (the latter also becoming a method call at that point) — see
+/// `resolve.rs`'s docs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodCallExpr {
+    pub receiver: Box<Expression>,
+    pub method: Identifier,
+    pub args: Vec<Expression>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

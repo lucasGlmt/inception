@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    let bad = Effects.sine(2s).range(0.0, 1.0).phase(90deg);
+}

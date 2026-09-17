@@ -1,0 +1,8 @@
+import std.Effects;
+
+scene main {
+    let breathe =
+        Effects.sine(2s)
+            .phase(90deg)
+            .range(10%, 100%);
+}

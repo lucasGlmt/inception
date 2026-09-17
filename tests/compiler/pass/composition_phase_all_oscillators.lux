@@ -1,0 +1,8 @@
+import std.Effects;
+
+scene main {
+    let a = Effects.sine(2s).phase(90deg);
+    let b = Effects.triangle(1s).phase(180deg);
+    let c = Effects.saw(500ms).phase(270deg);
+    let d = Effects.square(2s).phase(450deg);
+}

@@ -35,4 +35,10 @@ pub enum IntrinsicId {
     EffectsTriangle,
     EffectsSaw,
     EffectsSquare,
+    SignalRangeFloat,
+    SignalRangeIntensity,
+    SignalRangeAngle,
+    SignalPhase,
+    SignalSpread,
+    SignalInvert,
 }

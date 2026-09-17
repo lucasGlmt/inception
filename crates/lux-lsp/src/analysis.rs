@@ -282,6 +282,17 @@ impl AnalysisSnapshot {
             {
                 return std_member_completions(module, prefix);
             }
+            // A receiver that isn't a module but *is* a `Signal<Float>`
+            // local is a method call (`wave.range(...)`) — same
+            // disambiguation `lux-hir`'s `resolve_call` makes, just done
+            // here from a local's inferred type rather than name
+            // resolution.
+            if self.visible_locals(offset).into_iter().any(|local| {
+                local.name == receiver
+                    && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
+            }) {
+                return signal_float_method_completions(prefix);
+            }
             return self
                 .role_members(receiver)
                 .into_iter()
@@ -387,11 +398,51 @@ impl AnalysisSnapshot {
     fn expected_call_argument_type(&self, offset: usize) -> Option<ExpectedType> {
         let (open_paren, active_param) = enclosing_call_paren(&self.document.source, offset)?;
         let (qualifier, name) = call_name_before(&self.document.source, open_paren)?;
-        let module = self
+        if let Some(module) = self
             .imported_std_modules()
             .into_iter()
-            .find(|module| module.short_name == qualifier)?;
-        ExpectedType::for_call_argument(module.path, name, active_param)
+            .find(|module| module.short_name == qualifier)
+        {
+            return ExpectedType::for_call_argument(module.path, name, active_param);
+        }
+        if !self.visible_locals(offset).into_iter().any(|local| {
+            local.name == qualifier
+                && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
+        }) {
+            return None;
+        }
+        // Unlike `for_call_argument`'s functions (same type at a given
+        // position across every overload, e.g. `Math.min(Int, Int)` vs.
+        // `(Float, Float)`), `range`'s three overloads disagree at *every*
+        // position — the only thing that disambiguates them is each
+        // other's bound sharing one type. So narrow by whatever's already
+        // been typed in earlier argument positions first, then take the
+        // (now hopefully singular) candidate's type at `active_param`.
+        let candidates = lux_stdlib::signal_float_method_candidates(name);
+        let already_typed: Vec<(usize, Type)> = self.document.source
+            [open_paren + 1..offset.min(self.document.source.len())]
+            .split(',')
+            .take(active_param)
+            .enumerate()
+            .filter_map(|(i, text)| parsed_expression_type(text.trim()).map(|ty| (i, ty)))
+            .collect();
+        let narrowed: Vec<&lux_stdlib::Signature> = candidates
+            .iter()
+            .filter(|sig| {
+                already_typed.iter().all(|&(i, ty)| {
+                    sig.params.get(i).map(|p| p.ty)
+                        == Some(lux_typeck::stdlib_bridge::to_param_type(ty))
+                })
+            })
+            .collect();
+        let mut types = narrowed
+            .iter()
+            .filter_map(|sig| sig.params.get(active_param))
+            .map(|param| lux_typeck::stdlib_bridge::from_param_type(param.ty));
+        let first = types.next()?;
+        types
+            .all(|ty| ty == first)
+            .then_some(ExpectedType::exact(first))
     }
 
     /// Signature help for the call the cursor is currently inside,
@@ -402,11 +453,20 @@ impl AnalysisSnapshot {
         let offset = self.document.map.offset(&self.document.source, position);
         let (open_paren, active_param) = enclosing_call_paren(&self.document.source, offset)?;
         let (qualifier, name) = call_name_before(&self.document.source, open_paren)?;
-        let module = self
+        let candidates = if let Some(module) = self
             .imported_std_modules()
             .into_iter()
-            .find(|module| module.short_name == qualifier)?;
-        let candidates = lux_stdlib::candidates(module.path, name);
+            .find(|module| module.short_name == qualifier)
+        {
+            lux_stdlib::candidates(module.path, name)
+        } else if self.visible_locals(offset).into_iter().any(|local| {
+            local.name == qualifier
+                && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
+        }) {
+            lux_stdlib::signal_float_method_candidates(name)
+        } else {
+            return None;
+        };
         if candidates.is_empty() {
             return None;
         }
@@ -569,6 +629,24 @@ impl AnalysisSnapshot {
                     sig.doc
                 ));
             }
+        } else if let Some(sig) = qualifier_before(&self.document.source, word.1)
+            .filter(|receiver| {
+                self.visible_locals(offset).into_iter().any(|local| {
+                    local.name == *receiver
+                        && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
+                })
+            })
+            .and_then(|_| {
+                lux_stdlib::SIGNAL_FLOAT_METHODS
+                    .iter()
+                    .find(|sig| sig.name == word.0)
+            })
+        {
+            value = Some(format!(
+                "```lux\n{}\n```\n\n{}",
+                signature_label(sig),
+                sig.doc
+            ));
         } else if let Some(module) = self
             .imported_std_modules()
             .into_iter()
@@ -912,6 +990,9 @@ impl AnalysisSnapshot {
                                 }
                                 push(call.callee.name.span, 1);
                             }
+                            if let Expression::MethodCall(method_call) = expression {
+                                push(method_call.method.span, 1);
+                            }
                         });
                     }
                 }
@@ -983,11 +1064,89 @@ fn capability(name: &str) -> Option<Capability> {
     }
 }
 
+/// A pure-syntax type heuristic (no name/import resolution beyond
+/// `lux_stdlib`'s static registry) — good enough for hover/completion,
+/// not a substitute for `lux_typeck::check`. Extended, beyond literals,
+/// to understand stdlib calls and `Signal<Float>` method calls so a
+/// `let`-bound composition (`let breathe = Effects.sine(2s).range(10%, 100%);`)
+/// still reports its real final type without needing an explicit
+/// annotation — required for hover to match item 50 of the
+/// signal-composition task brief, whose worked example is unannotated.
+/// Parses `text` as a standalone expression (by wrapping it in a throwaway
+/// `let`) and returns its heuristic type via [`expression_type`]. Used
+/// only to look at an *already-typed* argument earlier in the same call
+/// the cursor is inside (see `expected_call_argument_type`'s `range`
+/// narrowing) — a small, bounded reparse, not a general expression-eval
+/// facility.
+fn parsed_expression_type(text: &str) -> Option<Type> {
+    if text.is_empty() {
+        return None;
+    }
+    let wrapped = format!("scene s {{ let x = {text}; }}");
+    let (ast, errors) = lux_syntax::parse_recovering(&wrapped);
+    if !errors.is_empty() {
+        return None;
+    }
+    let Item::Scene(scene) = ast.items.first()? else {
+        return None;
+    };
+    let Statement::Let(let_stmt) = scene.body.statements.first()? else {
+        return None;
+    };
+    expression_type(&let_stmt.value)
+}
+
 fn expression_type(expression: &Expression) -> Option<Type> {
     match expression {
         Expression::Literal(literal, _) => Some(lux_typeck::literal_type(*literal)),
         Expression::Grouped(inner, _) => expression_type(inner),
+        Expression::Call(call) => {
+            let qualifier = call.callee.qualifier.as_ref()?;
+            let module = lux_stdlib::find_module_by_short_name(&qualifier.name)?;
+            resolve_return_type(
+                lux_stdlib::candidates(module.path, &call.callee.name.name),
+                &call.args,
+            )
+        }
+        Expression::MethodCall(method_call) => {
+            let receiver_ty = expression_type(&method_call.receiver)?;
+            if receiver_ty != Type::Signal(lux_typeck::SignalElement::Float) {
+                return None;
+            }
+            resolve_return_type(
+                lux_stdlib::signal_float_method_candidates(&method_call.method.name),
+                &method_call.args,
+            )
+        }
         _ => None,
+    }
+}
+
+/// The return type of whichever `candidates` overload matches `args`'
+/// arity and (if more than one arity-matching overload exists) first
+/// argument's own heuristic type — the same disambiguation
+/// `lux_stdlib::resolve_overload`/`resolve_signal_float_method` do with
+/// real type info, just driven by `expression_type` recursively instead.
+fn resolve_return_type(candidates: &[lux_stdlib::Signature], args: &[Expression]) -> Option<Type> {
+    let matching: Vec<_> = candidates
+        .iter()
+        .filter(|sig| sig.params.len() == args.len())
+        .collect();
+    match matching.len() {
+        0 => None,
+        1 => Some(lux_typeck::stdlib_bridge::from_param_type(
+            matching[0].return_ty,
+        )),
+        _ => {
+            let first_arg_ty = expression_type(args.first()?)?;
+            let first_arg_param = lux_typeck::stdlib_bridge::to_param_type(first_arg_ty);
+            let exact: Vec<_> = matching
+                .iter()
+                .filter(|sig| sig.params.first().map(|p| p.ty) == Some(first_arg_param))
+                .collect();
+            (exact.len() == 1)
+                .then(|| lux_typeck::stdlib_bridge::from_param_type(exact[0].return_ty))
+        }
     }
 }
 
@@ -1143,6 +1302,38 @@ fn std_member_completions(
             CompletionItem {
                 label: sig.name.into(),
                 kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(detail),
+                documentation: Some(Documentation::String(sig.doc.into())),
+                insert_text: Some(format!("{}($0)", sig.name)),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                sort_text: Some("1-member".into()),
+                ..CompletionItem::default()
+            }
+        })
+        .collect()
+}
+
+/// Completion for `wave.$0` where `wave` is a `Signal<Float>` local —
+/// `range`/`phase`/`invert`, mirroring `std_member_completions`'s shape
+/// (same `Signature` type, same label/detail/doc/snippet fields), just
+/// sourced from `lux_stdlib::SIGNAL_FLOAT_METHODS` instead of an
+/// `import`-qualified module.
+fn signal_float_method_completions(prefix: &str) -> Vec<CompletionItem> {
+    let mut seen = HashSet::new();
+    lux_stdlib::SIGNAL_FLOAT_METHODS
+        .iter()
+        .filter(|sig| seen.insert(sig.name))
+        .filter(|sig| matches_prefix(sig.name, prefix))
+        .map(|sig| {
+            let overloads = lux_stdlib::signal_float_method_candidates(sig.name);
+            let detail = overloads
+                .iter()
+                .map(signature_label)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            CompletionItem {
+                label: sig.name.into(),
+                kind: Some(CompletionItemKind::METHOD),
                 detail: Some(detail),
                 documentation: Some(Documentation::String(sig.doc.into())),
                 insert_text: Some(format!("{}($0)", sig.name)),
@@ -1312,6 +1503,12 @@ fn visit_expression(expression: &Expression, visitor: &mut impl FnMut(&Expressio
         }
         Expression::Call(call) => {
             for arg in &call.args {
+                visit_expression(arg, visitor);
+            }
+        }
+        Expression::MethodCall(method_call) => {
+            visit_expression(&method_call.receiver, visitor);
+            for arg in &method_call.args {
                 visit_expression(arg, visitor);
             }
         }
@@ -1770,6 +1967,176 @@ mod tests {
             let help = analysis.signature_help(position);
             assert!(help.is_some(), "{name} should offer signature help");
         }
+    }
+
+    /// Item 46/15 (spread).
+    #[test]
+    fn signal_float_local_member_completion_lists_range_phase_spread_invert() {
+        let (analysis, position) =
+            snapshot("import std.Effects;\nscene main { let wave = Effects.sine(2s); wave.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["range", "phase", "spread", "invert"]);
+    }
+
+    /// A non-`Signal<Float>` local (e.g. a plain `Signal<Intensity>`) gets
+    /// no method completions — `range`/`phase`/`spread`/`invert` aren't
+    /// defined on it.
+    #[test]
+    fn non_signal_float_local_member_completion_is_empty() {
+        let (analysis, position) = snapshot(
+            "import std.Signal;\nscene main { let level: Signal<Intensity> = Signal.constant(50%); level.$0 }",
+        );
+        assert!(analysis.complete(position).is_empty());
+    }
+
+    /// Item 47: once the first `range` argument narrows to `Intensity`,
+    /// the second argument position expects `Intensity` too. Uses a
+    /// `let`-bound receiver (`wave.range(`), not the inline
+    /// `Effects.sine(2s).range(` form — see this module's "known
+    /// limitations" note near `member_receiver`/`call_name_before`: those
+    /// textual heuristics only resolve a receiver that's a bare
+    /// identifier, so a *chained* receiver doesn't get argument-position
+    /// hints yet, even though it type-checks and completes fine as a
+    /// whole expression.
+    #[test]
+    fn range_second_argument_expects_the_same_type_as_the_first() {
+        let (analysis, position) = snapshot(
+            "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.range(0%, $0",
+        );
+        assert_eq!(
+            analysis.expected_type(analysis.document.map.offset(analysis.source(), position)),
+            Some(ExpectedType::exact(Type::Intensity))
+        );
+    }
+
+    #[test]
+    fn signature_help_on_range_lists_every_element_type_overload() {
+        let source =
+            "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.range(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 3);
+    }
+
+    /// Item 45/49.
+    #[test]
+    fn hover_on_range_method_shows_its_signature() {
+        let source = "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.range(0%, 100%); }";
+        let pos = source.rfind("range").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        // `range` is overloaded (one per target element type); hover picks
+        // the first matching signature by name, same as it would for any
+        // other overloaded stdlib function — see
+        // `hover_on_signal_constant_call_shows_its_signature`.
+        assert!(
+            contents
+                .value
+                .contains("range(min: Float, max: Float) -> Signal<Float>")
+        );
+    }
+
+    #[test]
+    fn hover_on_phase_method_shows_its_signature() {
+        let source = "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.phase(90deg); }";
+        let pos = source.rfind("phase").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(
+            contents
+                .value
+                .contains("phase(offset: Angle) -> Signal<Float>")
+        );
+    }
+
+    /// Item 15: hover on `.spread(...)` shows its signature, exactly like
+    /// `.phase(...)`'s — both are driven off the same
+    /// `lux_stdlib::SIGNAL_FLOAT_METHODS` table, so this exercises that
+    /// the new entry is wired up the same way.
+    #[test]
+    fn hover_on_spread_method_shows_its_signature() {
+        let source = "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.spread(360deg); }";
+        let pos = source.rfind("spread").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(
+            contents
+                .value
+                .contains("spread(amount: Angle) -> Signal<Float>")
+        );
+    }
+
+    /// Item 15: signature help for `.spread(...)` lists its one overload.
+    #[test]
+    fn signature_help_on_spread_lists_its_signature() {
+        let source =
+            "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.spread(";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis.signature_help(position).unwrap();
+        assert_eq!(help.signatures.len(), 1);
+    }
+
+    /// Item 50: hover on an *unannotated* `let` whose value is a fluent
+    /// composition still reports the final, fully-inferred type.
+    #[test]
+    fn hover_on_unannotated_composed_local_reports_the_final_type() {
+        let source =
+            "import std.Effects;\nscene main { let breathe = Effects.sine(2s).range(10%, 100%); }";
+        let pos = source.find("breathe").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).unwrap();
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(contents.value.contains("Signal<Intensity>"));
+    }
+
+    /// Item 52: `range` doesn't support `Color` — diagnosed immediately.
+    #[test]
+    fn range_color_is_diagnosed_without_save() {
+        let (analysis, _) = snapshot(
+            "import std.Effects;\nscene main { let x = Effects.sine(2s).range(red, blue); $0}",
+        );
+        let diagnostics = analysis.diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("range does not support `Color`"))
+        );
+    }
+
+    /// Item 18/19: expected type at `<-` for a role that expects
+    /// `Signal<Intensity>` correctly ranks a `.range()`-to-`Intensity`
+    /// local first, and a `.range()`-to-`Angle` local behind it.
+    #[test]
+    fn signal_binding_completion_prefers_a_range_to_intensity_local_over_range_to_angle() {
+        let (analysis, position) = snapshot(
+            "import std.Effects; rig contract Demo { role Washes: Group<Intensity>; } scene main { let a = Effects.sine(2s).range(5%, 100%); let b = Effects.sine(2s).range(0deg, 180deg); Washes.intensity <- $0 }",
+        );
+        let items = analysis.complete(position);
+        let a = items.iter().find(|item| item.label == "a").unwrap();
+        let b = items.iter().find(|item| item.label == "b").unwrap();
+        assert_eq!(a.sort_text.as_deref(), Some("0-local"));
+        assert_ne!(b.sort_text.as_deref(), Some("0-local"));
     }
 
     #[test]

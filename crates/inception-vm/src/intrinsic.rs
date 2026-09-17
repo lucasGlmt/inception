@@ -126,6 +126,17 @@ pub fn eval_intrinsic(intrinsic: IntrinsicId, args: &[Value]) -> Value {
              directly, which needs mutable access to the SignalStore and the clock this \
              pure function doesn't have — see this module's doc"
         ),
+
+        IntrinsicId::SignalRangeFloat
+        | IntrinsicId::SignalRangeIntensity
+        | IntrinsicId::SignalRangeAngle
+        | IntrinsicId::SignalPhase
+        | IntrinsicId::SignalSpread
+        | IntrinsicId::SignalInvert => unreachable!(
+            "eval_intrinsic: signal-transformation intrinsics are handled by \
+             Vm::exec_call_intrinsic directly, which needs mutable access to the \
+             SignalStore this pure function doesn't have — see this module's doc"
+        ),
     }
 }
 

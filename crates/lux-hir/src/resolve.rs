@@ -556,7 +556,38 @@ impl Lowering<'_> {
             }
             Expression::Grouped(inner, _) => self.resolve_expr(scope, inner),
             Expression::Call(call) => self.resolve_call(scope, call),
+            Expression::MethodCall(method_call) => self.resolve_method_call(scope, method_call),
         }
+    }
+
+    /// Resolves a genuine chained method call (`ast::MethodCallExpr`) —
+    /// the receiver is itself an arbitrary expression, never a bare
+    /// identifier that could instead be a module qualifier (that
+    /// disambiguation only applies to `ast::CallExpr`, see
+    /// `resolve_call`'s docs).
+    fn resolve_method_call(
+        &mut self,
+        scope: &Scope,
+        method_call: &ast::MethodCallExpr,
+    ) -> Option<HirExpr> {
+        let receiver = self.resolve_expr(scope, &method_call.receiver);
+        let args: Vec<Option<HirExpr>> = method_call
+            .args
+            .iter()
+            .map(|arg| self.resolve_expr(scope, arg))
+            .collect();
+        let receiver = receiver?;
+        let mut resolved_args = Vec::with_capacity(args.len());
+        for arg in args {
+            resolved_args.push(arg?);
+        }
+        Some(HirExpr::MethodCall {
+            receiver: Box::new(receiver),
+            method: method_call.method.name.clone(),
+            method_span: method_call.method.span,
+            args: resolved_args,
+            span: method_call.span,
+        })
     }
 
     fn resolve_call(&mut self, scope: &Scope, call: &CallExpr) -> Option<HirExpr> {
@@ -583,6 +614,31 @@ impl Lowering<'_> {
         };
 
         let member_name = &call.callee.name.name;
+
+        // A qualifier that isn't an imported module but *does* resolve to
+        // a local variable is a method call on that value, e.g.
+        // `wave.range(...)` — the parser can't tell this apart from
+        // `Effects.sine(...)` (see `ast::MethodCallExpr`'s docs), so the
+        // disambiguation happens here, once name resolution is available.
+        // Modules are checked first: an import always wins over a
+        // same-named local, so this never changes how an existing
+        // `Math.sin(...)`-style call resolves.
+        if self.imports.get(&qualifier.name).is_none()
+            && let Some(local) = scope.lookup(&qualifier.name)
+        {
+            let mut resolved_args = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved_args.push(arg?);
+            }
+            return Some(HirExpr::MethodCall {
+                receiver: Box::new(HirExpr::Local(local, qualifier.span)),
+                method: member_name.clone(),
+                method_span: call.callee.name.span,
+                args: resolved_args,
+                span: call.span,
+            });
+        }
+
         match self.imports.get(&qualifier.name) {
             None => {
                 // Not imported. If it's a real std module the author

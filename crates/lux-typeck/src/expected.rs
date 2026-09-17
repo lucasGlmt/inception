@@ -49,7 +49,22 @@ impl ExpectedType {
     /// there's no single right answer to hint, so the LSP falls back to
     /// generic completion there rather than showing a misleading type.
     pub fn for_call_argument(module_path: &[&str], name: &str, arg_index: usize) -> Option<Self> {
-        let candidates = lux_stdlib::candidates(module_path, name);
+        Self::from_candidates(lux_stdlib::candidates(module_path, name), arg_index)
+    }
+
+    /// The method-call counterpart to [`Self::for_call_argument`] — the
+    /// expected type of the `arg_index`-th argument of
+    /// `<Signal<Float> receiver>.name(...)`. This is exactly what makes
+    /// `wave.range($0` hint `Intensity` for both arguments once the first
+    /// one is: every `range` overload requires both bounds to share the
+    /// same type (see `lux_stdlib::methods`'s docs), so once the first
+    /// argument narrows which overload applies, the second is no longer
+    /// ambiguous either.
+    pub fn for_signal_float_method_argument(name: &str, arg_index: usize) -> Option<Self> {
+        Self::from_candidates(lux_stdlib::signal_float_method_candidates(name), arg_index)
+    }
+
+    fn from_candidates(candidates: &[lux_stdlib::Signature], arg_index: usize) -> Option<Self> {
         if candidates.is_empty() {
             return None;
         }

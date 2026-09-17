@@ -53,6 +53,25 @@ pub enum IntrinsicId {
     EffectsTriangle,
     EffectsSaw,
     EffectsSquare,
+    /// `Signal<Float>.range(T, T) -> Signal<T>`, monomorphized per target
+    /// `T` like `SignalConstant*`/`Effects*`. The receiver (a
+    /// `Signal<Float>`) is operand 0 — see `param_types` — never a
+    /// separate concept from the other two popped operands.
+    SignalRangeFloat,
+    SignalRangeIntensity,
+    SignalRangeAngle,
+    /// `Signal<Float>.phase(Angle) -> Signal<Float>`.
+    SignalPhase,
+    /// `Signal<Float>.spread(Angle) -> Signal<Float>`: distributes its
+    /// `Angle` operand as a per-fixture phase offset across whatever
+    /// group the signal ends up bound to (`amount * fixture_index /
+    /// fixture_count`, resolved at sample time by
+    /// `inception_vm::signal::SignalSampleContext` — see that type's
+    /// docs). Shares `SignalPhase`'s operand shape exactly (receiver,
+    /// then one `Angle`), just a different `IntrinsicId`.
+    SignalSpread,
+    /// `Signal<Float>.invert() -> Signal<Float>`.
+    SignalInvert,
 }
 
 impl IntrinsicId {
@@ -81,6 +100,14 @@ impl IntrinsicId {
             | IntrinsicId::EffectsTriangle
             | IntrinsicId::EffectsSaw
             | IntrinsicId::EffectsSquare => &[Duration],
+            IntrinsicId::SignalRangeFloat => &[Signal(ScalarValueType::Float), Float, Float],
+            IntrinsicId::SignalRangeIntensity => {
+                &[Signal(ScalarValueType::Float), Intensity, Intensity]
+            }
+            IntrinsicId::SignalRangeAngle => &[Signal(ScalarValueType::Float), Angle, Angle],
+            IntrinsicId::SignalPhase => &[Signal(ScalarValueType::Float), Angle],
+            IntrinsicId::SignalSpread => &[Signal(ScalarValueType::Float), Angle],
+            IntrinsicId::SignalInvert => &[Signal(ScalarValueType::Float)],
         }
     }
 
@@ -108,7 +135,13 @@ impl IntrinsicId {
             IntrinsicId::EffectsSine
             | IntrinsicId::EffectsTriangle
             | IntrinsicId::EffectsSaw
-            | IntrinsicId::EffectsSquare => ValueType::Signal(ScalarValueType::Float),
+            | IntrinsicId::EffectsSquare
+            | IntrinsicId::SignalPhase
+            | IntrinsicId::SignalSpread
+            | IntrinsicId::SignalInvert
+            | IntrinsicId::SignalRangeFloat => ValueType::Signal(ScalarValueType::Float),
+            IntrinsicId::SignalRangeIntensity => ValueType::Signal(ScalarValueType::Intensity),
+            IntrinsicId::SignalRangeAngle => ValueType::Signal(ScalarValueType::Angle),
         }
     }
 }

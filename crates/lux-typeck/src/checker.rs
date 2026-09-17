@@ -326,6 +326,13 @@ impl Checker {
                 }
             }
             HirExpr::Call(call) => self.check_call(local_types, call),
+            HirExpr::MethodCall {
+                receiver,
+                method,
+                method_span,
+                args,
+                span,
+            } => self.check_method_call(local_types, receiver, method, *method_span, args, *span),
         }
     }
 
@@ -395,7 +402,7 @@ impl Checker {
             OverloadError::NoMatchingOverload => {
                 let candidates = lux_stdlib::candidates(module_path, name);
                 if candidates.len() == 1 {
-                    self.report_single_overload_mismatch(&candidates[0], call, arg_types);
+                    self.report_single_overload_mismatch(&candidates[0], &call.args, arg_types);
                 } else {
                     let found = arg_types
                         .iter()
@@ -419,6 +426,156 @@ impl Checker {
         }
     }
 
+    /// `<receiver>.<method>(<args>)`. In V1 every builtin method
+    /// (`range`/`phase`/`invert`) is only defined on `Signal<Float>`, so
+    /// this checks the receiver's type once, up front, rather than baking
+    /// that requirement into each method's own signature — the same
+    /// reason `Signature::params` for these never lists the receiver
+    /// (see `lux_stdlib::methods`'s module doc).
+    fn check_method_call(
+        &mut self,
+        local_types: &HashMap<LocalId, Type>,
+        receiver: &HirExpr,
+        method: &str,
+        method_span: Span,
+        args: &[HirExpr],
+        call_span: Span,
+    ) -> Option<Type> {
+        let receiver_ty = self.infer(local_types, receiver);
+
+        let arg_types: Vec<Option<Type>> = args
+            .iter()
+            .map(|arg| self.infer(local_types, arg))
+            .collect();
+        if arg_types.iter().any(Option::is_none) {
+            return None;
+        }
+        let arg_types: Vec<Type> = arg_types.into_iter().map(Option::unwrap).collect();
+
+        let receiver_ty = receiver_ty?;
+        if receiver_ty != Type::Signal(SignalElement::Float) {
+            self.errors.push(
+                TypeError::new(
+                    format!("no method `{method}` on type `{receiver_ty}`"),
+                    method_span,
+                )
+                .with_help(
+                    "`.range()`/`.phase()`/`.spread()`/`.invert()` are only defined on \
+                     `Signal<Float>`",
+                ),
+            );
+            return None;
+        }
+
+        // `.phase()` and `.spread()` both additionally require their
+        // receiver to be, transitively through other `.phase()` calls, a
+        // direct `Effects` oscillator — see this function's caller-facing
+        // docs and `docs/stdlib/Signal.md` for why (both convert an angle
+        // into a phase shift, which needs to know the source's period, a
+        // concept only a base oscillator has). `.spread()` deliberately
+        // isn't itself chainable this way — see `is_phase_source_valid`'s
+        // docs.
+        if (method == "phase" || method == "spread") && !is_phase_source_valid(receiver) {
+            self.errors.push(
+                TypeError::new(
+                    format!(
+                        "`.{method}()` can only be applied directly to an `Effects` oscillator \
+                         (`sine`/`triangle`/`saw`/`square`), or to another `.phase(...)` call \
+                         chained from one"
+                    ),
+                    method_span,
+                )
+                .with_secondary_span(receiver.span()),
+            );
+            return None;
+        }
+
+        let param_types: Vec<_> = arg_types.iter().copied().map(to_param_type).collect();
+        match lux_stdlib::resolve_signal_float_method(method, &param_types) {
+            Ok(sig) => Some(from_param_type(sig.return_ty)),
+            Err(err) => {
+                self.report_method_overload_error(
+                    method,
+                    method_span,
+                    call_span,
+                    args,
+                    &arg_types,
+                    err,
+                );
+                None
+            }
+        }
+    }
+
+    fn report_method_overload_error(
+        &mut self,
+        method: &str,
+        method_span: Span,
+        call_span: Span,
+        args: &[HirExpr],
+        arg_types: &[Type],
+        err: OverloadError,
+    ) {
+        match err {
+            OverloadError::UnknownModule | OverloadError::UnknownMember => {
+                self.errors.push(TypeError::new(
+                    format!("no method `{method}` on `Signal<Float>`"),
+                    method_span,
+                ));
+            }
+            OverloadError::ArityMismatch {
+                expected_arities,
+                found,
+            } => {
+                let expected = expected_arities.first().copied().unwrap_or(0);
+                let plural = if expected == 1 { "" } else { "s" };
+                self.errors.push(TypeError::new(
+                    format!("expected {expected} argument{plural}, found {found}"),
+                    call_span,
+                ));
+            }
+            OverloadError::NoMatchingOverload => {
+                let candidates = lux_stdlib::signal_float_method_candidates(method);
+                if method == "range" && arg_types.len() == 2 && arg_types[0] != arg_types[1] {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "range bounds must have the same type: found `{}` and `{}`",
+                            arg_types[0], arg_types[1]
+                        ),
+                        args[0].span().to(args[1].span()),
+                    ));
+                } else if method == "range" && arg_types.len() == 2 {
+                    // Bounds agree with each other, but not with any
+                    // supported target type (e.g. both `Color`).
+                    self.errors.push(TypeError::new(
+                        format!("range does not support `{}`", arg_types[0]),
+                        args[0].span().to(args[1].span()),
+                    ));
+                } else if candidates.len() == 1 {
+                    self.report_single_overload_mismatch(&candidates[0], args, arg_types);
+                } else {
+                    let found = arg_types
+                        .iter()
+                        .map(Type::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "no matching overload of `.{method}(...)` for argument types ({found})"
+                        ),
+                        call_span,
+                    ));
+                }
+            }
+            OverloadError::Ambiguous(_) => {
+                self.errors.push(TypeError::new(
+                    format!("ambiguous call to `.{method}(...)`"),
+                    call_span,
+                ));
+            }
+        }
+    }
+
     /// Precise, per-argument diagnostic for a function with exactly one
     /// overload (e.g. `Math.sin`, `Color.rgb`): points at the first
     /// mismatching argument specifically, rather than the generic
@@ -426,10 +583,10 @@ impl Checker {
     fn report_single_overload_mismatch(
         &mut self,
         sig: &'static Signature,
-        call: &HirCall,
+        args: &[HirExpr],
         arg_types: &[Type],
     ) {
-        for ((param, found), arg) in sig.params.iter().zip(arg_types).zip(&call.args) {
+        for ((param, found), arg) in sig.params.iter().zip(arg_types).zip(args) {
             let expected = from_param_type(param.ty);
             if *found != expected {
                 self.errors.push(TypeError::new(
@@ -559,5 +716,33 @@ impl Checker {
             ));
         }
         result
+    }
+}
+
+/// Whether `.phase()` **or** `.spread()` may legally be applied to
+/// `receiver` — true if `receiver` is (transitively, through other
+/// `.phase()` calls) a direct `Effects.{sine,triangle,saw,square}` call.
+/// See `check_method_call`'s docs for why this is restricted rather than
+/// generic. Deliberately does **not** recurse through `.spread()` itself:
+/// `.spread(...).spread(...)` and `.spread(...).phase(...)` both stay
+/// rejected in V1 — `inception_vm::signal::SignalKind::Spread`'s `source`
+/// is only ever a base oscillator or a (already-flattened) `Phase` node,
+/// never another `Spread`, so there is nothing on the runtime side to
+/// resolve a chained `.spread()`/a `.phase()` built on top of one against.
+fn is_phase_source_valid(receiver: &HirExpr) -> bool {
+    match receiver {
+        HirExpr::Call(call) => {
+            let HirCallee::Std {
+                module_path, name, ..
+            } = &call.callee;
+            module_path.len() == 2
+                && module_path[0] == "std"
+                && module_path[1] == "Effects"
+                && matches!(name.as_str(), "sine" | "triangle" | "saw" | "square")
+        }
+        HirExpr::MethodCall {
+            receiver, method, ..
+        } if method == "phase" => is_phase_source_valid(receiver),
+        _ => false,
     }
 }

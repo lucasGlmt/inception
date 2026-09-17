@@ -97,4 +97,17 @@ pub enum VmErrorKind {
     /// dividing by it would be a division by zero, so this is reported as
     /// a structured error instead.
     InvalidSignalPeriod,
+    /// A `Phase` signal's source doesn't resolve to a base oscillator —
+    /// unreachable from real Lux source (see
+    /// `inception_vm::signal::SignalError::UnsupportedPhaseSource`'s
+    /// docs), kept only for the same defensive reason every other
+    /// `VmErrorKind` exists.
+    UnsupportedPhaseSource(crate::signal::SignalId),
+    /// A `Spread` signal's source doesn't resolve to a base oscillator
+    /// (directly, or through one `Phase`) — unreachable from real Lux
+    /// source (see
+    /// `inception_vm::signal::SignalError::UnsupportedSpreadSource`'s
+    /// docs), kept only for the same defensive reason every other
+    /// `VmErrorKind` exists.
+    UnsupportedSpreadSource(crate::signal::SignalId),
 }

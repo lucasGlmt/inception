@@ -505,10 +505,22 @@ impl Vm {
             // mutation.
             #[allow(clippy::unnecessary_to_owned)]
             for fixture in fixtures.to_vec() {
-                if let Some(signal) = self.bindings.unbind(fixture, core_attribute) {
+                if let Some((signal, fixture_index, fixture_count)) =
+                    self.bindings.unbind(fixture, core_attribute)
+                {
+                    // Resamples with the exact same fixture context the
+                    // binding itself was sampled with (see
+                    // `SignalBindingStore::unbind`'s docs) — a
+                    // `.spread()`-bound signal must freeze at *this*
+                    // fixture's own phase, not fixture 0's.
+                    let context = crate::signal::SignalSampleContext::new(
+                        clock.now(),
+                        fixture_index,
+                        fixture_count,
+                    );
                     let sampled = self
                         .signals
-                        .sample(signal, clock.now())
+                        .sample(signal, context)
                         .map_err(|err| signal_error(function, pc, err))?;
                     if let Some(current) = sampled.into_attribute_value(attribute) {
                         lighting.set_fixture_attribute(fixture, current);
@@ -579,11 +591,26 @@ impl Vm {
             .map_err(|_| VmError::new(function, pc, VmErrorKind::UnknownTarget(target)))?
             .to_vec();
 
-        for fixture in fixtures {
+        // Same `SignalId` bound to every fixture in the group (never one
+        // signal per fixture, per `SignalBindingStore::bind`'s docs) —
+        // only `fixture_index` varies, taken from `fixtures`' own
+        // position, which is exactly the rig-ordered `Vec<FixtureId>`
+        // `inception_linker` already produced (see
+        // `crate::binding`'s module doc on why this is deterministic).
+        // This is what a `.spread()` node needs at sample time to give
+        // each fixture a distinct phase from one shared signal graph.
+        let fixture_count = fixtures.len();
+        for (fixture_index, fixture) in fixtures.into_iter().enumerate() {
             transitions
                 .cancel(clock.now(), fixture, core_attribute, lighting)
                 .map_err(|err| transition_error(function, pc, target, err))?;
-            self.bindings.bind(fixture, core_attribute, signal);
+            self.bindings.bind(
+                fixture,
+                core_attribute,
+                signal,
+                fixture_index,
+                fixture_count,
+            );
         }
 
         Ok(Step::Continue)
@@ -678,8 +705,111 @@ impl Vm {
             return Ok(Step::Continue);
         }
 
+        if let Some(elem) = signal_transform_elem(intrinsic) {
+            let id = self.construct_signal_transform(intrinsic, &args);
+            self.stack.push(Value::Signal(elem, id));
+            return Ok(Step::Continue);
+        }
+
         self.stack.push(eval_intrinsic(intrinsic, &args));
         Ok(Step::Continue)
+    }
+
+    /// Builds the `SignalKind` for a `SignalRange*`/`SignalPhase`/
+    /// `SignalSpread`/`SignalInvert` intrinsic and inserts it into
+    /// `self.signals`. Takes
+    /// `&mut self` (not a free function like `effects_signal_kind`'s
+    /// builder) because `SignalPhase` needs read access to `self.signals`
+    /// to flatten a chain of `.phase()` calls onto the same base
+    /// oscillator (see `SignalKind::Phase`'s docs).
+    fn construct_signal_transform(
+        &mut self,
+        intrinsic: lux_bytecode::IntrinsicId,
+        args: &[Value],
+    ) -> crate::signal::SignalId {
+        use lux_bytecode::IntrinsicId;
+
+        let Value::Signal(_, source) = args[0] else {
+            unreachable!(
+                "construct_signal_transform: receiver operand type already checked by the verifier"
+            );
+        };
+
+        let kind = match intrinsic {
+            IntrinsicId::SignalRangeFloat
+            | IntrinsicId::SignalRangeIntensity
+            | IntrinsicId::SignalRangeAngle => SignalKind::Range {
+                source,
+                min: args[1],
+                max: args[2],
+            },
+            IntrinsicId::SignalPhase => {
+                let Value::Angle(offset_millideg) = args[1] else {
+                    unreachable!(
+                        "construct_signal_transform: SignalPhase offset operand type already \
+                         checked by the verifier"
+                    );
+                };
+                // Flatten a chain of `.phase()` calls onto the same base
+                // oscillator, combining offsets, instead of nesting —
+                // `lux-typeck` only ever allows this when `source` is
+                // itself a base oscillator or another (already flattened)
+                // `Phase`, so `SignalKind::Phase::source` stays a base
+                // oscillator directly, always.
+                let (flattened_source, combined_offset) = match self.signals.kind_of(source) {
+                    Some(SignalKind::Phase {
+                        source: inner,
+                        offset_millideg: existing,
+                    }) => (inner, existing + offset_millideg),
+                    _ => (source, offset_millideg),
+                };
+                SignalKind::Phase {
+                    source: flattened_source,
+                    offset_millideg: combined_offset.rem_euclid(360_000),
+                }
+            }
+            IntrinsicId::SignalSpread => {
+                let Value::Angle(amount_millideg) = args[1] else {
+                    unreachable!(
+                        "construct_signal_transform: SignalSpread amount operand type already \
+                         checked by the verifier"
+                    );
+                };
+                // Unlike `SignalPhase`, never flattened onto a chained
+                // `.spread(...)`/`.phase(...)` — `lux-typeck` only allows
+                // `.spread()` directly on a base oscillator or on a
+                // `.phase(...)` chained from one, so `source` here is
+                // already exactly what `SignalStore::oscillator_basis`
+                // expects: a base oscillator or a `Phase` wrapping one,
+                // never another `Spread`.
+                SignalKind::Spread {
+                    source,
+                    amount_millideg,
+                }
+            }
+            IntrinsicId::SignalInvert => SignalKind::Invert { source },
+            _ => unreachable!(
+                "construct_signal_transform: called with a non-signal-transform intrinsic"
+            ),
+        };
+        self.signals.insert(kind)
+    }
+}
+
+/// The `ScalarValueType` a `SignalRange*`/`SignalPhase`/`SignalInvert`
+/// intrinsic produces, or `None` for every other intrinsic.
+fn signal_transform_elem(
+    intrinsic: lux_bytecode::IntrinsicId,
+) -> Option<lux_bytecode::ScalarValueType> {
+    use lux_bytecode::{IntrinsicId, ScalarValueType};
+    match intrinsic {
+        IntrinsicId::SignalRangeFloat => Some(ScalarValueType::Float),
+        IntrinsicId::SignalRangeIntensity => Some(ScalarValueType::Intensity),
+        IntrinsicId::SignalRangeAngle => Some(ScalarValueType::Angle),
+        IntrinsicId::SignalPhase | IntrinsicId::SignalSpread | IntrinsicId::SignalInvert => {
+            Some(ScalarValueType::Float)
+        }
+        _ => None,
     }
 }
 
@@ -745,8 +875,12 @@ fn transition_error(
 }
 
 fn signal_error(function: FunctionId, pc: usize, error: SignalError) -> VmError {
-    let SignalError::UnknownSignal(id) = error;
-    VmError::new(function, pc, VmErrorKind::UnknownSignal(id))
+    let kind = match error {
+        SignalError::UnknownSignal(id) => VmErrorKind::UnknownSignal(id),
+        SignalError::UnsupportedPhaseSource(id) => VmErrorKind::UnsupportedPhaseSource(id),
+        SignalError::UnsupportedSpreadSource(id) => VmErrorKind::UnsupportedSpreadSource(id),
+    };
+    VmError::new(function, pc, kind)
 }
 
 /// Executes a binary arithmetic op over two runtime values.

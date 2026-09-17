@@ -213,6 +213,22 @@ pub enum HirExpr {
         span: Span,
     },
     Call(HirCall),
+    /// `<receiver>.<method>(<args>)`, resolved. Covers both syntactic
+    /// forms `lux-syntax` can produce: a genuine chained
+    /// `ast::MethodCallExpr` (receiver is some other expression, e.g.
+    /// `Effects.sine(2s).phase(...)`), and a single-level `ast::CallExpr`
+    /// whose qualifier turned out to name a local variable rather than an
+    /// imported module (e.g. `wave.range(...)`) — see `resolve.rs`'s
+    /// `resolve_call` for that disambiguation. `method` stays a raw name,
+    /// like `HirAssign::attribute_name`: whether it names a real method
+    /// (and what it does) is `lux-typeck`'s call, not this crate's.
+    MethodCall {
+        receiver: Box<HirExpr>,
+        method: String,
+        method_span: Span,
+        args: Vec<HirExpr>,
+        span: Span,
+    },
 }
 
 impl HirExpr {
@@ -223,6 +239,7 @@ impl HirExpr {
             HirExpr::Unary { span, .. } => *span,
             HirExpr::Binary { span, .. } => *span,
             HirExpr::Call(call) => call.span,
+            HirExpr::MethodCall { span, .. } => *span,
         }
     }
 }

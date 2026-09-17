@@ -215,21 +215,231 @@ already written against `SignalId`/`sample(now)` alone, never against
 section.
 
 Every oscillator returns `Signal<Float>`, not `Signal<Intensity>` or any
-other lighting-domain type — so, for now, this remains invalid:
+other lighting-domain type — so this, on its own, remains invalid:
 
 ```lux
 Front.intensity <- Effects.sine(2s); // error: expected Signal<Intensity>, found Signal<Float>
 ```
 
-A future `.range(min, max)` will be the way to turn a `Signal<Float>`
-into an attribute-ready signal; see `docs/stdlib/Effects.md`.
+`.range()` (below) is how a `Signal<Float>` becomes attribute-ready.
+
+## Signal composition: `.range()`, `.phase()`, `.spread()`, `.invert()`
+
+A `Signal<Float>` — from an oscillator, `Signal.constant`, or another
+composition — can be transformed with method-call syntax, chaining
+freely:
+
+```lux
+import std.Effects;
+
+scene main {
+    let breathe =
+        Effects.sine(2s)
+            .phase(90deg)
+            .range(5%, 100%);
+
+    Front.intensity <- breathe;
+}
+```
+
+Each transformation **creates a new signal**; it never mutates its
+source. `let b = a.phase(90deg);` leaves `a` exactly as it was — `b`
+just references `a` by its `SignalId`, the same "graph of nodes, not a
+copy of definitions" approach the runtime already used internally.
+Reading the chain top to bottom, the type changes at each step:
+
+```text
+Effects.sine(2s)          Signal<Float>
+    .phase(90deg)      -> Signal<Float>
+    .range(5%, 100%)   -> Signal<Intensity>
+```
+
+### `.range(min, max)`
+
+```lux
+Effects.sine(2s).range(0%, 100%)   // Signal<Intensity>
+Effects.sine(2s).range(0deg, 180deg) // Signal<Angle>
+Effects.sine(2s).range(0.0, 10.0)    // Signal<Float>
+```
+
+Only defined on `Signal<Float>`. Remaps the source's value — clamped to
+`0.0..1.0` first, so an already-out-of-range source (e.g. after
+`.invert()`) never extrapolates past `min`/`max` — to
+`min + x * (max - min)`, computed in `min`/`max`'s own native
+representation. `min` and `max` must be the same type:
+
+```lux
+Effects.sine(2s).range(0%, 180deg); // error: range bounds must have the same type
+```
+
+`min` may be greater than `max` — that's a valid, deliberate way to
+reverse the ramp (`range(100%, 0%)` falls from `100%` to `0%` as the
+source rises from `0.0` to `1.0`), not an error.
+
+`Color` isn't a supported `range` target yet: RGB/HSV/linear-light
+interpolation each have different, non-obvious meanings, and picking one
+prematurely would be hard to walk back.
+
+### `.phase(offset)`
+
+```lux
+Effects.sine(2s).phase(90deg) // Signal<Float>
+```
+
+Shifts the signal's cycle by `offset / 360deg` of a period —
+`phase(90deg)` is a quarter-cycle ahead of the unshifted signal, and
+`phase(450deg)` behaves exactly like `phase(90deg)` (multi-turn offsets
+wrap automatically).
+
+Only valid **directly on an `Effects` oscillator** (`sine`/`triangle`/
+`saw`/`square`), or on another `.phase(...)` call chained from one:
+
+```lux
+let a = Effects.sine(2s).phase(90deg).phase(90deg); // ok — same as phase(180deg)
+
+let b = Effects.sine(2s).range(0%, 100%).phase(90deg); // error
+```
+
+This is a deliberate V1 restriction, not an oversight: shifting an
+arbitrary signal's "phase" would require knowing its underlying period,
+which only a base oscillator actually has — see
+`docs/rfcs/0004-effects-oscillators.md` for the full rationale.
+
+### `.spread(amount)`
+
+Every signal so far has been the same for every fixture a binding
+reaches: `Front.intensity <- Effects.sine(2s).range(0%, 100%);` makes
+every fixture in `Front` breathe in perfect unison. `.spread(amount)`
+breaks that unison, distributing `amount` as a phase offset across the
+fixtures of whatever group the signal ends up bound to — fixture `i` of
+`n` total gets `amount * i / n` added to its own phase:
+
+```lux
+import std.Effects;
+
+scene main {
+    Front.intensity <-
+        Effects.sine(2s)
+            .spread(360deg)
+            .range(5%, 100%);
+}
+```
+
+With 4 fixtures in `Front`, this renders a genuine wave sweeping across
+the group — not four fixtures blinking together:
+
+```text
+4 fixtures, spread(360deg)
+
+[  0°] [ 90°] [180°] [270°]
+  f0     f1     f2     f3
+```
+
+Each bracket is one fixture's own phase offset into the *same* `2s` sine
+cycle — at any instant, fixture 1 is a quarter-cycle ahead of fixture 0,
+fixture 2 a quarter ahead of fixture 1, and so on, which is what reads as
+motion across the fixture line rather than a shared pulse.
+
+#### The formula, precisely
+
+```text
+offset = amount * fixture_index / fixture_count
+```
+
+**Deliberately `fixture_count`, never `fixture_count - 1`**: with 4
+fixtures and a full `360deg` spread, the table above is `0°, 90°, 180°,
+270°` — fixture 0 and fixture 3 end up **90° apart**, not back in phase.
+Dividing by `fixture_count - 1` instead would put the first and last
+fixture at the exact same phase for a full-turn spread, collapsing the
+wave's seam back onto itself; `/ fixture_count` never does.
+
+A single-fixture target (`fixture_count == 1`) always gets `offset ==
+0` — `.spread()` is a no-op outside a real multi-fixture binding, not a
+division by zero.
+
+#### Fixture order is the rig's order
+
+`fixture_index` is a fixture's position within the target's fixture list
+as the **rig binding** wrote it — the same order `role Front: ...`'s
+binding in the rig config lists `Front`'s fixtures, resolved once at link
+time into a plain, ordered list. It is never a `HashMap`'s iteration
+order and never changes on its own: the same rig always spreads a show
+the same way, and re-ordering the fixtures in the rig binding is how you
+re-order (or reverse) the spread — there is no separate in-language way
+to do that in V1 (see "Not here yet" below).
+
+#### Composing with `.phase()` and `.range()`
+
+```lux
+Effects.sine(2s)
+    .phase(45deg)   // every fixture's phase, shifted 45° ahead
+    .spread(360deg) // ...then each fixture's own spread offset on top
+    .range(5%, 100%)
+```
+
+The static `.phase()` offset and each fixture's own `.spread()` offset
+add together — a fixture's total phase shift is `45deg + amount * i / n`.
+`.spread()` must come directly after an `Effects` oscillator, or after a
+single `.phase(...)` chained from one — the same restriction `.phase()`
+itself has, and for the same reason (only a base oscillator has a period
+to shift). `.spread()` isn't itself chainable this way:
+`.spread(...).spread(...)` and `.spread(...).phase(...)` are both
+compile-time errors.
+
+`.range()` is unaffected by where `.spread()` sits relative to it —
+`.spread()` only ever changes *which phase* of the source oscillator a
+fixture reads, never the sampled value itself, so `.range()` before or
+after `.spread()` both type-check and both reach the fixture correctly;
+writing `.spread()` before `.range()` (as in every example above) is the
+natural reading order, since `.range()` is what converts the signal to
+the attribute's own type at the very end of the chain.
+
+#### How this works underneath: `SignalSampleContext`
+
+Every signal now samples against a small context, not a bare timestamp:
+
+```rust
+pub struct SignalSampleContext {
+    pub now: Timestamp,
+    pub fixture_index: usize,
+    pub fixture_count: usize,
+}
+```
+
+Every signal kind other than `.spread()` ignores `fixture_index`/
+`fixture_count` entirely — a plain oscillator, `.range()`, `.phase()` and
+`.invert()` behave *exactly* as before this existed, sampling identically
+regardless of which fixture (or none at all — a plain `Timestamp` still
+works everywhere a context is expected, converting automatically) is
+asking. The binding engine samples the *same* signal definition once per
+fixture in the target, each time with that fixture's own
+`fixture_index`/`fixture_count` — never a distinct signal per fixture —
+which is what lets one `Effects.sine(2s).spread(360deg)` expression
+render a different phase on each of `Front`'s fixtures.
+
+### `.invert()`
+
+```lux
+Effects.sine(2s).invert() // Signal<Float>
+```
+
+`1.0 - source`, sampled fresh every time — not clamped, so inverting a
+signal outside `0.0..1.0` (e.g. after `.range(10.0, 20.0)`) produces a
+value outside `0.0..1.0` too.
 
 ## What's not here yet
 
-- There's no way to combine or transform signals (no `map`, no `.range()`,
-  no `.phase()`, no arithmetic on a `Signal<T>`).
-- There's no per-fixture "spread": every fixture a binding reaches
-  currently renders the exact same sampled value.
-- `std.Effects` does not exist yet.
+- No signal arithmetic (`wave * 2.0`, `wave + otherWave`) and no
+  composition beyond `.range()`/`.phase()`/`.spread()`/`.invert()` (no
+  `map`, no combinators like `zip`/`combine`/`fold`).
+- `.spread()` is index-based only: it distributes phase by a fixture's
+  plain position in the rig-resolved list, nothing else. No 2D/3D
+  physical-position spread, no coordinate-based selection, no reverse/
+  custom group-ordering DSL (re-order the rig binding itself instead), no
+  random spread, no tempo/BPM sync.
+- No tempo/BPM-relative periods, no easing curves, no random/noise
+  signal kinds.
+- Named call arguments (`Effects.sine(period: 2s)`) don't exist — every
+  call, including method calls, stays positional.
 
 See `docs/rfcs/0002-signal-type.md` for the full design rationale.

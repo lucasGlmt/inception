@@ -1259,3 +1259,104 @@ fn every_oscillator_intrinsic_constructs_a_sampleable_signal() {
         );
     }
 }
+
+/// Item 63 at VM granularity: `Effects.sine(2s).range(20%, 100%)` via
+/// `CALL_INTRINSIC` twice — the receiver (the sine signal) is pushed,
+/// then the two `Intensity` bounds, then `SignalRangeIntensity` pops all
+/// three.
+#[test]
+fn call_intrinsic_signal_range_intensity_constructs_a_sampleable_signal() {
+    let module = module_with(
+        vec![
+            Constant::Duration(2_000_000_000),
+            Constant::Intensity(13107), // 20%
+            Constant::Intensity(65535), // 100%
+        ],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSine,
+                    arg_count: 1,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::Const(ConstantId(2)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SignalRangeIntensity,
+                    arg_count: 3,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            3,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    // `SignalId(0)` is the sine, `SignalId(1)` is the range built on it.
+    assert_eq!(
+        vm.signals().sample(SignalId(1), Timestamp::ZERO).unwrap(),
+        Value::Intensity(39321) // sine(t=0) = 0.5 -> 60% of the 20%..100% range
+    );
+}
+
+/// Item 22: `.phase()` construction never mutates the source's own
+/// `started_at`/`period` — chaining two `.phase()` calls flattens onto
+/// the *same* base oscillator rather than nesting `Phase` inside `Phase`,
+/// combining offsets instead (see `SignalKind::Phase`'s docs).
+#[test]
+fn chained_phase_calls_flatten_onto_the_same_base_oscillator() {
+    let module = module_with(
+        vec![Constant::Duration(2_000_000_000), Constant::Angle(90_000)],
+        vec![function(
+            0,
+            vec![
+                Instruction::Const(ConstantId(0)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::EffectsSine,
+                    arg_count: 1,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SignalPhase,
+                    arg_count: 2,
+                },
+                Instruction::Const(ConstantId(1)),
+                Instruction::CallIntrinsic {
+                    intrinsic: lux_bytecode::IntrinsicId::SignalPhase,
+                    arg_count: 2,
+                },
+                Instruction::Pop,
+                Instruction::Return,
+            ],
+            vec![],
+            2,
+        )],
+    );
+    let mut vm = started(module);
+    let clock = VirtualClock::new();
+    let mut lighting = LightingState::new();
+    let mut transitions = TransitionEngine::new();
+    vm.run_until_blocked(&clock, &mut lighting, &mut transitions)
+        .unwrap();
+    assert!(vm.is_finished());
+
+    // SignalId(0) = sine, SignalId(1) = phase(90deg), SignalId(2) =
+    // phase(90deg) applied again — must reference SignalId(0) directly
+    // (flattened) with a combined 180deg offset, not SignalId(1).
+    assert_eq!(
+        vm.signals().kind_of(crate::signal::SignalId(2)),
+        Some(crate::signal::SignalKind::Phase {
+            source: crate::signal::SignalId(0),
+            offset_millideg: 180_000,
+        })
+    );
+}

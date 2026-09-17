@@ -1,0 +1,7 @@
+import std.Effects;
+
+scene main {
+    let a: Signal<Float> = Effects.sine(2s).range(0.0, 10.0);
+    let b: Signal<Intensity> = Effects.sine(2s).range(0%, 100%);
+    let c: Signal<Angle> = Effects.sine(2s).range(0deg, 180deg);
+}

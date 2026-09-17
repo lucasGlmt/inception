@@ -1,0 +1,9 @@
+import std.Effects;
+
+scene main {
+    let breathe =
+        Effects.sine(2s)
+            .range(5%, 100%);
+
+    Washes.intensity <- breathe;
+}

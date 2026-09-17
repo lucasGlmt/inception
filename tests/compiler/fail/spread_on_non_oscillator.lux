@@ -1,0 +1,6 @@
+import std.Signal;
+
+scene main {
+    let level = Signal.constant(0.5);
+    let bad = level.spread(360deg);
+}

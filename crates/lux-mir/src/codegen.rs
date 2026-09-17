@@ -263,6 +263,12 @@ fn to_bytecode_intrinsic(id: lux_stdlib::IntrinsicId) -> lux_bytecode::Intrinsic
         S::EffectsTriangle => B::EffectsTriangle,
         S::EffectsSaw => B::EffectsSaw,
         S::EffectsSquare => B::EffectsSquare,
+        S::SignalRangeFloat => B::SignalRangeFloat,
+        S::SignalRangeIntensity => B::SignalRangeIntensity,
+        S::SignalRangeAngle => B::SignalRangeAngle,
+        S::SignalPhase => B::SignalPhase,
+        S::SignalSpread => B::SignalSpread,
+        S::SignalInvert => B::SignalInvert,
     }
 }
 

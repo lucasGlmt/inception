@@ -1,0 +1,8 @@
+import std.Effects;
+
+scene main {
+    Washes.intensity <-
+        Effects.sine(2s)
+            .spread(360deg)
+            .range(5%, 100%);
+}

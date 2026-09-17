@@ -46,6 +46,12 @@ pub fn expr_type(local_types: &[Type], expr: &HirExpr) -> Type {
             })
         }
         HirExpr::Call(call) => from_param_type(resolve_call(local_types, call).return_ty),
+        HirExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => from_param_type(resolve_method_call(local_types, receiver, method, args).return_ty),
     }
 }
 
@@ -69,6 +75,30 @@ pub fn resolve_call(local_types: &[Type], call: &HirCall) -> &'static Signature 
             "resolve_call: `{module_path:?}.{name}` should already be a valid, \
              non-ambiguous call — `resolve_call` must only be called on HIR that \
              passed `lux_typeck::check`"
+        )
+    })
+}
+
+/// Trusted re-derivation of which `Signal<Float>` method `receiver.method(args)`
+/// resolved to, mirroring [`resolve_call`]'s role. The receiver's own type
+/// isn't re-checked here (that's `check_method_call`'s job, already run) —
+/// only its argument types are needed to pick the right overload.
+pub fn resolve_method_call(
+    local_types: &[Type],
+    receiver: &HirExpr,
+    method: &str,
+    args: &[HirExpr],
+) -> &'static Signature {
+    let _ = expr_type(local_types, receiver);
+    let arg_types: Vec<_> = args
+        .iter()
+        .map(|arg| to_param_type(expr_type(local_types, arg)))
+        .collect();
+    lux_stdlib::resolve_signal_float_method(method, &arg_types).unwrap_or_else(|_| {
+        unreachable!(
+            "resolve_method_call: `.{method}(...)` should already be a valid, \
+             non-ambiguous method call — `resolve_method_call` must only be called on \
+             HIR that passed `lux_typeck::check`"
         )
     })
 }

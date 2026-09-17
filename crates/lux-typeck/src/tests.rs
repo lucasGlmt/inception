@@ -916,3 +916,342 @@ fn every_effects_oscillator_type_checks() {
         assert!(result.is_ok(), "{name}: unexpected errors: {result:?}");
     }
 }
+
+// --- Signal composition: .range()/.phase()/.invert() ------------------
+
+#[test]
+fn range_infers_the_target_element_type() {
+    for (bounds, expected) in [
+        ("0.0, 10.0", "Signal<Float>"),
+        ("0%, 100%", "Signal<Intensity>"),
+        ("0deg, 180deg", "Signal<Angle>"),
+    ] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave = Effects.sine(2s).range({bounds});
+            }}
+            "#
+        );
+        let hir = {
+            let ast = lux_syntax::parse(&source).expect("source should parse");
+            lux_hir::lower(&ast, &TargetEnvironment::new()).expect("source should resolve")
+        };
+        let typed = check(&hir).unwrap_or_else(|e| panic!("{bounds}: unexpected errors: {e:?}"));
+        assert_eq!(typed.scenes[0].local_types[0].to_string(), expected);
+    }
+}
+
+#[test]
+fn range_bounds_must_have_the_same_type() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).range(0%, 180deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("range bounds must have the same type: found `Intensity` and `Angle`")
+    }));
+}
+
+#[test]
+fn range_does_not_support_color() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).range(red, blue);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("range does not support `Color`"))
+    );
+}
+
+#[test]
+fn range_is_only_available_on_signal_float() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let level: Signal<Intensity> = Signal.constant(50%);
+            let bad = level.range(0%, 100%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("no method `range` on type `Signal<Intensity>`")
+    }));
+}
+
+#[test]
+fn range_wrong_arity_is_reported() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).range(0%);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("expected 2 arguments, found 1"))
+    );
+}
+
+#[test]
+fn phase_on_a_direct_oscillator_passes() {
+    for name in ["sine", "triangle", "saw", "square"] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave = Effects.{name}(2s).phase(90deg);
+            }}
+            "#
+        );
+        let result = check_source(&source);
+        assert!(result.is_ok(), "{name}: unexpected errors: {result:?}");
+    }
+}
+
+#[test]
+fn phase_chained_on_another_phase_passes() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).phase(90deg).phase(90deg);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn phase_on_a_constant_signal_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let level = Signal.constant(1.5);
+            let wave = level.phase(90deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("can only be applied directly to an `Effects` oscillator")
+    }));
+}
+
+#[test]
+fn phase_after_range_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).range(0.0, 1.0).phase(90deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("can only be applied directly to an `Effects` oscillator")
+    }));
+}
+
+#[test]
+fn spread_on_a_direct_oscillator_passes() {
+    for name in ["sine", "triangle", "saw", "square"] {
+        let source = format!(
+            r#"
+            import std.Effects;
+            scene main {{
+                let wave = Effects.{name}(2s).spread(360deg);
+            }}
+            "#
+        );
+        let result = check_source(&source);
+        assert!(result.is_ok(), "{name}: unexpected errors: {result:?}");
+    }
+}
+
+#[test]
+fn spread_chained_on_phase_passes() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).phase(45deg).spread(360deg);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn spread_then_range_passes() {
+    let result = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).spread(360deg).range(5%, 100%);
+        }
+        "#,
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn spread_on_a_constant_signal_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Signal;
+        scene main {
+            let level = Signal.constant(1.5);
+            let wave = level.spread(360deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("can only be applied directly to an `Effects` oscillator")
+    }));
+}
+
+#[test]
+fn spread_after_range_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).range(0.0, 1.0).spread(360deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("can only be applied directly to an `Effects` oscillator")
+    }));
+}
+
+#[test]
+fn spread_chained_on_another_spread_is_rejected() {
+    let errors = check_source(
+        r#"
+        import std.Effects;
+        scene main {
+            let wave = Effects.sine(2s).spread(180deg).spread(180deg);
+        }
+        "#,
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("can only be applied directly to an `Effects` oscillator")
+    }));
+}
+
+#[test]
+fn signal_binding_with_spread_and_range_passes() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Effects;
+        scene main {
+            Washes.intensity <- Effects.sine(2s).spread(360deg).range(5%, 100%);
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn invert_passes_and_returns_signal_float() {
+    let hir = {
+        let source = r#"
+            import std.Effects;
+            scene main {
+                let wave = Effects.sine(2s).invert();
+            }
+        "#;
+        let ast = lux_syntax::parse(source).expect("source should parse");
+        lux_hir::lower(&ast, &TargetEnvironment::new()).expect("source should resolve")
+    };
+    let typed = check(&hir).expect("unexpected errors");
+    assert_eq!(typed.scenes[0].local_types[0].to_string(), "Signal<Float>");
+}
+
+#[test]
+fn fluent_composition_infers_the_final_element_type() {
+    let hir = {
+        let source = r#"
+            import std.Effects;
+            scene main {
+                let breathe =
+                    Effects.sine(2s)
+                        .phase(90deg)
+                        .range(10%, 100%);
+            }
+        "#;
+        let ast = lux_syntax::parse(source).expect("source should parse");
+        lux_hir::lower(&ast, &TargetEnvironment::new()).expect("source should resolve")
+    };
+    let typed = check(&hir).expect("unexpected errors");
+    assert_eq!(
+        typed.scenes[0].local_types[0].to_string(),
+        "Signal<Intensity>"
+    );
+}
+
+#[test]
+fn signal_binding_with_range_to_intensity_passes() {
+    let result = check_source_with_targets(
+        r#"
+        import std.Effects;
+        scene main {
+            Washes.intensity <- Effects.sine(2s).range(5%, 100%);
+        }
+        "#,
+        &washes_environment(),
+    );
+    assert!(result.is_ok(), "unexpected errors: {result:?}");
+}
+
+#[test]
+fn signal_binding_with_range_to_angle_is_rejected() {
+    let errors = check_source_with_targets(
+        r#"
+        import std.Effects;
+        scene main {
+            Washes.intensity <- Effects.sine(2s).range(0deg, 180deg);
+        }
+        "#,
+        &washes_environment(),
+    )
+    .unwrap_err();
+    assert!(errors.iter().any(|e| {
+        e.message
+            .contains("expected `Signal<Intensity>`, found `Signal<Angle>`")
+    }));
+}

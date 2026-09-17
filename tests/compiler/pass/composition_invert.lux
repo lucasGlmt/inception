@@ -1,0 +1,5 @@
+import std.Effects;
+
+scene main {
+    let wave: Signal<Float> = Effects.sine(2s).invert();
+}
