@@ -274,7 +274,7 @@ impl AnalysisSnapshot {
             return import_completions(&segments, prefix);
         }
 
-        if let Some(receiver) = member_receiver(&self.document.source, offset) {
+        if let Some(receiver) = receiver_expr_before(&self.document.source, offset) {
             if let Some(module) = self
                 .imported_std_modules()
                 .into_iter()
@@ -282,15 +282,13 @@ impl AnalysisSnapshot {
             {
                 return std_member_completions(module, prefix);
             }
-            // A receiver that isn't a module but *is* a `Signal<Float>`
-            // local is a method call (`wave.range(...)`) — same
-            // disambiguation `lux-hir`'s `resolve_call` makes, just done
-            // here from a local's inferred type rather than name
-            // resolution.
-            if self.visible_locals(offset).into_iter().any(|local| {
-                local.name == receiver
-                    && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
-            }) {
+            // A receiver that isn't a module but *does* resolve to
+            // `Signal<Float>` is a method call (`wave.range(...)`, or a
+            // whole chained expression like `Effects.sine(2s).range(...)`)
+            // — same disambiguation `lux-hir`'s `resolve_call` makes for a
+            // bare local, generalized to any receiver expression via
+            // `receiver_is_signal_float`.
+            if self.receiver_is_signal_float(offset, receiver) {
                 return signal_float_method_completions(prefix);
             }
             return self
@@ -337,7 +335,7 @@ impl AnalysisSnapshot {
             );
         }
         if is_top_level(&self.document.source, offset) {
-            for keyword in ["scene", "rig"] {
+            for keyword in ["import", "scene", "rig"] {
                 if matches_prefix(keyword, prefix) {
                     items.push(keyword_item(keyword, "4-keyword"));
                 }
@@ -405,10 +403,7 @@ impl AnalysisSnapshot {
         {
             return ExpectedType::for_call_argument(module.path, name, active_param);
         }
-        if !self.visible_locals(offset).into_iter().any(|local| {
-            local.name == qualifier
-                && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
-        }) {
+        if !self.receiver_is_signal_float(offset, qualifier) {
             return None;
         }
         // Unlike `for_call_argument`'s functions (same type at a given
@@ -459,10 +454,7 @@ impl AnalysisSnapshot {
             .find(|module| module.short_name == qualifier)
         {
             lux_stdlib::candidates(module.path, name)
-        } else if self.visible_locals(offset).into_iter().any(|local| {
-            local.name == qualifier
-                && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
-        }) {
+        } else if self.receiver_is_signal_float(offset, qualifier) {
             lux_stdlib::signal_float_method_candidates(name)
         } else {
             return None;
@@ -611,15 +603,38 @@ impl AnalysisSnapshot {
         result
     }
 
+    /// Whether `receiver` — as extracted by [`receiver_expr_before`]/
+    /// [`call_name_before`], so possibly a whole chained expression like
+    /// `Effects.sine(2s).phase(90deg)`, not just a bare identifier —
+    /// resolves to `Signal<Float>`, the one receiver type every builtin
+    /// method (`range`/`phase`/`spread`/`invert`) is defined on. A bare
+    /// identifier naming a real `let`-bound local is checked against its
+    /// actual inferred type first (`visible_locals`, backed by
+    /// `lux_typeck::resolve_annotation`/`expression_type`); a receiver
+    /// that isn't a known local's name — because it's a longer expression,
+    /// or simply an unrecognized identifier — falls back to
+    /// `parsed_expression_type`'s syntax-only heuristic, which recurses
+    /// through nested calls/method calls on its own. Trying both, in
+    /// this order, is what lets a genuine `let`-bound local keep using
+    /// precise type information while a chained expression still gets a
+    /// sound (if heuristic) answer.
+    fn receiver_is_signal_float(&self, offset: usize, receiver: &str) -> bool {
+        let target = Type::Signal(lux_typeck::SignalElement::Float);
+        self.visible_locals(offset)
+            .into_iter()
+            .any(|local| local.name == receiver && local.ty == Some(target))
+            || parsed_expression_type(receiver) == Some(target)
+    }
+
     pub fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.document.map.offset(&self.document.source, position);
         let word = word_at(&self.document.source, offset)?;
         let mut value = None;
         if let Some(module) =
-            qualifier_before(&self.document.source, word.1).and_then(|qualifier| {
+            receiver_expr_before(&self.document.source, word.1).and_then(|receiver| {
                 self.imported_std_modules()
                     .into_iter()
-                    .find(|module| module.short_name == qualifier)
+                    .find(|module| module.short_name == receiver)
             })
         {
             if let Some(sig) = module.functions.iter().find(|sig| sig.name == word.0) {
@@ -629,13 +644,8 @@ impl AnalysisSnapshot {
                     sig.doc
                 ));
             }
-        } else if let Some(sig) = qualifier_before(&self.document.source, word.1)
-            .filter(|receiver| {
-                self.visible_locals(offset).into_iter().any(|local| {
-                    local.name == *receiver
-                        && local.ty == Some(Type::Signal(lux_typeck::SignalElement::Float))
-                })
-            })
+        } else if let Some(sig) = receiver_expr_before(&self.document.source, word.1)
+            .filter(|receiver| self.receiver_is_signal_float(offset, receiver))
             .and_then(|_| {
                 lux_stdlib::SIGNAL_FLOAT_METHODS
                     .iter()
@@ -1198,33 +1208,75 @@ fn identifier_prefix(source: &str, offset: usize) -> &str {
     &before[start..]
 }
 
-fn member_receiver(source: &str, offset: usize) -> Option<&str> {
+/// The receiver expression immediately before the `.` at `offset`
+/// (excluding that `.` and whatever partial member name is still being
+/// typed after it, same as `identifier_prefix`'s scope) — e.g. for
+/// `Effects.sine(2s).$0` this returns `"Effects.sine(2s)"`, not just the
+/// bare identifier a naive backward scan over identifier characters would
+/// stop at. Generalizes what used to be two separate, bare-identifier-only
+/// scanners (`member_receiver`/`qualifier_before`) into one, so a whole
+/// chained expression gets exactly the same completion/hover/signature-help
+/// treatment a `let`-bound intermediate would — see [`scan_receiver_expr`]
+/// for the actual backward scan.
+fn receiver_expr_before(source: &str, offset: usize) -> Option<&str> {
     let before = &source[..offset.min(source.len())];
     let prefix = identifier_prefix(source, offset);
     let head = &before[..before.len() - prefix.len()];
-    let head = head.strip_suffix('.')?;
-    let start = head
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| !ch.is_ascii_alphanumeric() && *ch != '_')
-        .map_or(0, |(i, ch)| i + ch.len_utf8());
-    let receiver = &head[start..];
-    (!receiver.is_empty()).then_some(receiver)
+    scan_receiver_expr(head.strip_suffix('.')?)
 }
 
-/// If `word_start` is immediately preceded by `<ident>.` (ignoring
-/// nothing in between — no whitespace is tolerated, matching Lux's
-/// dotted-call syntax), returns that identifier. Used by `hover` to
-/// recognize `Math` in `Math.sin` when the cursor is on `sin`.
-fn qualifier_before(source: &str, word_start: usize) -> Option<&str> {
-    let before = &source[..word_start.min(source.len())];
-    let before = before.strip_suffix('.')?;
-    let start = before
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| !ch.is_ascii_alphanumeric() && *ch != '_')
-        .map_or(0, |(i, ch)| i + ch.len_utf8());
-    let receiver = &before[start..];
+/// The trailing receiver expression occupying the end of `text` — `text`
+/// must already end exactly where the receiver itself ends (no trailing
+/// `.` or partial identifier). Walks backward from the end, balancing
+/// `(...)`/`)...(` pairs so a call's argument list (however deeply
+/// parenthesized, however many commas or literals it contains) is
+/// swallowed as one unit rather than stopping at its first non-identifier
+/// character; a chain of `.method(...)` segments is walked the same way,
+/// each `.` continuing the scan into the segment before it. Whitespace
+/// (including newlines, e.g. a fluent chain broken across lines) never
+/// terminates the scan on its own — in real Lux source the only things
+/// that can legitimately end a receiver expression are punctuation
+/// (`=`, `<-`, `->`, `;`, `{`, `}`, an enclosing unmatched `(`, a `,` at
+/// the top level, ...), never bare whitespace, so treating whitespace as
+/// a boundary would wrongly truncate a chain formatted like:
+/// ```lux
+/// Effects.sine(2s)
+///     .phase(90deg)
+///     .spread(360deg)
+/// ```
+/// This is a textual approximation of `lux-syntax`'s own chained
+/// `ast::MethodCallExpr`/`ast::CallExpr` grammar (see that type's docs),
+/// good enough to find *where the expression starts* while the document
+/// may still be mid-edit and not fully parseable — real disambiguation
+/// and typing is still `parsed_expression_type`'s/`lux_typeck`'s job at
+/// the call site, never duplicated here.
+fn scan_receiver_expr(text: &str) -> Option<&str> {
+    let trimmed = text.trim_end();
+    let mut depth: i32 = 0;
+    let mut start = trimmed.len();
+    let mut i = trimmed.len();
+    while i > 0 {
+        let ch = trimmed[..i].chars().next_back().unwrap();
+        let continues = match ch {
+            ')' => {
+                depth += 1;
+                true
+            }
+            '(' if depth == 0 => false,
+            '(' => {
+                depth -= 1;
+                true
+            }
+            _ if depth > 0 => true,
+            ch => ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch.is_whitespace(),
+        };
+        if !continues {
+            break;
+        }
+        i -= ch.len_utf8();
+        start = i;
+    }
+    let receiver = trimmed[start..].trim();
     (!receiver.is_empty()).then_some(receiver)
 }
 
@@ -1404,8 +1456,10 @@ fn enclosing_call_paren(source: &str, offset: usize) -> Option<(usize, usize)> {
 }
 
 /// Given the byte offset of a call's opening `(`, returns the
-/// `(qualifier, name)` immediately preceding it — e.g. for
-/// `...Color.rgb(...`, `("Color", "rgb")`. `None` if there's no qualified
+/// `(receiver, name)` immediately preceding it — e.g. for
+/// `...Color.rgb(...`, `("Color", "rgb")`, and equally for a chained
+/// receiver like `...Effects.sine(2s).range(...`, `("Effects.sine(2s)",
+/// "range")` (see [`scan_receiver_expr`]). `None` if there's no qualified
 /// name there (an unqualified or malformed call).
 fn call_name_before(source: &str, open_paren: usize) -> Option<(&str, &str)> {
     let before = source[..open_paren].trim_end();
@@ -1418,8 +1472,8 @@ fn call_name_before(source: &str, open_paren: usize) -> Option<(&str, &str)> {
     if name.is_empty() {
         return None;
     }
-    let qualifier = qualifier_before(before, name_start)?;
-    Some((qualifier, name))
+    let receiver = scan_receiver_expr(before[..name_start].strip_suffix('.')?)?;
+    Some((receiver, name))
 }
 
 fn word_at(source: &str, offset: usize) -> Option<(&str, usize, usize)> {
@@ -1969,6 +2023,101 @@ mod tests {
         }
     }
 
+    /// `Color.` member completion — the same generic path `Math.`/
+    /// `Signal.`/`Effects.` already exercise, just for the one module
+    /// that didn't yet have a dedicated regression test.
+    #[test]
+    fn color_module_member_completion_lists_its_functions() {
+        let (analysis, position) = snapshot("import std.Color;\nscene main { let x = Color.$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["rgb", "mix", "hsv"]);
+    }
+
+    /// A genuinely chained receiver (`Effects.sine(2s).`, no `let`
+    /// intermediate) gets the same `Signal<Float>` method completions a
+    /// `let`-bound one does — previously `member_receiver`'s
+    /// bare-identifier-only scan gave up on the trailing `)`, silently
+    /// falling through to plain local-variable completion instead.
+    #[test]
+    fn chained_receiver_member_completion_lists_signal_float_methods() {
+        let (analysis, position) =
+            snapshot("import std.Effects;\nscene main { let x = Effects.sine(2s).$0 }");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["range", "phase", "spread", "invert"]);
+    }
+
+    /// A longer chain — several method calls deep, and split across
+    /// lines the way every fluent-chain example in `docs/` is written —
+    /// still resolves correctly.
+    #[test]
+    fn multi_segment_chained_receiver_across_lines_completes() {
+        let source = "import std.Effects;\nscene main { let x = Effects.sine(2s)\n    .phase(90deg)\n    .$0 }";
+        let (analysis, position) = snapshot(source);
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(labels, ["range", "phase", "spread", "invert"]);
+    }
+
+    /// `import` itself is a completable top-level keyword — previously
+    /// missing from `complete()`'s top-level keyword list (only `scene`/
+    /// `rig` were offered), so typing `imp` proposed nothing.
+    #[test]
+    fn import_keyword_completes_at_top_level() {
+        let (analysis, position) = snapshot("imp$0");
+        let labels: Vec<_> = analysis
+            .complete(position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(labels.contains(&"import".to_string()), "{labels:?}");
+    }
+
+    /// Hovering a method on a genuinely chained receiver (no `let`
+    /// intermediate) shows its signature and doc, same as
+    /// `hover_on_phase_method_shows_its_signature` does for a `let`-bound
+    /// one.
+    #[test]
+    fn hover_on_chained_receiver_method_shows_its_signature() {
+        let source = "import std.Effects;\nscene main { let x = Effects.sine(2s).phase(90deg); }";
+        let pos = source.rfind("phase").unwrap() + 1;
+        let marked = format!("{}$0{}", &source[..pos], &source[pos..]);
+        let (analysis, position) = snapshot(&marked);
+        let hover = analysis.hover(position).expect("expected hover on `phase`");
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markup")
+        };
+        assert!(
+            contents
+                .value
+                .contains("phase(offset: Angle) -> Signal<Float>")
+        );
+    }
+
+    /// Signature help on a chained (not `let`-bound) receiver.
+    #[test]
+    fn signature_help_on_chained_receiver_lists_the_signature() {
+        let source = "import std.Effects;\nscene main { let x = Effects.sine(2s).range(0%, ";
+        let marked = format!("{source}$0");
+        let (analysis, position) = snapshot(&marked);
+        let help = analysis
+            .signature_help(position)
+            .expect("expected signature help");
+        // `range` has three overloads (one per target element type), same
+        // as `signature_help_on_range_lists_every_element_type_overload`.
+        assert_eq!(help.signatures.len(), 3);
+    }
+
     /// Item 46/15 (spread).
     #[test]
     fn signal_float_local_member_completion_lists_range_phase_spread_invert() {
@@ -1994,19 +2143,28 @@ mod tests {
     }
 
     /// Item 47: once the first `range` argument narrows to `Intensity`,
-    /// the second argument position expects `Intensity` too. Uses a
-    /// `let`-bound receiver (`wave.range(`), not the inline
-    /// `Effects.sine(2s).range(` form — see this module's "known
-    /// limitations" note near `member_receiver`/`call_name_before`: those
-    /// textual heuristics only resolve a receiver that's a bare
-    /// identifier, so a *chained* receiver doesn't get argument-position
-    /// hints yet, even though it type-checks and completes fine as a
-    /// whole expression.
+    /// the second argument position expects `Intensity` too.
     #[test]
     fn range_second_argument_expects_the_same_type_as_the_first() {
         let (analysis, position) = snapshot(
             "import std.Effects;\nscene main { let wave = Effects.sine(2s); let x = wave.range(0%, $0",
         );
+        assert_eq!(
+            analysis.expected_type(analysis.document.map.offset(analysis.source(), position)),
+            Some(ExpectedType::exact(Type::Intensity))
+        );
+    }
+
+    /// The same narrowing as `range_second_argument_expects_the_same_type_as_the_first`,
+    /// but with the receiver written as a genuine inline chain
+    /// (`Effects.sine(2s).range(`) rather than a `let`-bound intermediate
+    /// — `receiver_expr_before`/`call_name_before` resolve a chained
+    /// receiver exactly like a bare identifier one now (previously a
+    /// known limitation of this module's textual heuristics).
+    #[test]
+    fn range_second_argument_narrowing_works_on_an_inline_chained_receiver() {
+        let (analysis, position) =
+            snapshot("import std.Effects;\nscene main { let x = Effects.sine(2s).range(0%, $0");
         assert_eq!(
             analysis.expected_type(analysis.document.map.offset(analysis.source(), position)),
             Some(ExpectedType::exact(Type::Intensity))
